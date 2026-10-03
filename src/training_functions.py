@@ -98,7 +98,7 @@ def train_lstm_model(model: nn.Module, optimizing_criterion: nn.Module,
             val_loss = val_mae
         else:
             raise ValueError(f"Invalid optimizer_metric: {optimizer_metric}. Must be 'mse' or 'mae'.")
-        print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss:.6f}, MSE: {val_mse:.6f}, MAE: {val_mae:.6f}")
+        print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {loss:.6f}, Train MSE: {mse_train_local:.6f}, Train MAE: {mae_train_local:.6f}, Validation Loss: {val_loss:.6f}, MSE: {val_mse:.6f}, MAE: {val_mae:.6f}")
         mse_losses_val.append(val_mse)
         mae_losses_val.append(val_mae)
         if val_loss <= best_val - min_delta:
@@ -194,9 +194,18 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
             if natural_gradient_optimizer is not None:
                 natural_gradient_optimizer.zero_grad()
             optimizer.zero_grad()        
-            outputs = model(x_batch.to(device))
-            loss = -mll(outputs, y_batch.to(device)).to(device)
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
+            if not torch.isfinite(x_batch).all() or not torch.isfinite(y_batch).all():
+                raise ValueError("Non-finite values found in a training batch")
+            outputs = model(x_batch)
+            loss = -mll(outputs, y_batch).to(device)
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Non-finite GP loss")
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), max_norm=1.0, error_if_nonfinite=True
+            )
             if natural_gradient_optimizer is not None:
                 natural_gradient_optimizer.step()
             optimizer.step()

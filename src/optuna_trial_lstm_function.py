@@ -28,11 +28,19 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--symbols', nargs='+', default=['BTC-USD'], help='List of symbols to fetch data for')
 parser.add_argument('--input_study_features', nargs='+', default=['Returns'], help='List of features to use in the study')
 parser.add_argument('--device' , type=str, default='cuda', help='Device to use for training (e.g., "cuda" or "cpu")')
+parser.add_argument('--used_optimizer', type=str, default='adam', 
+                    help='Optimizer to use for training (e.g., "adam" or "sgd")')
+parser.add_argument('--loss_function', type=str, default='mae', 
+                    help='Loss function to use for training (e.g., "mae" or "mse" or "huber")')
+parser.add_argument('--huber_parameter', type=float, default=None)
 
 DATES_START_STUDY = config_dates['train']['start']
 DATES_END_STUDY = config_dates['test']['end']
 SYMBOLS = parser.parse_args().symbols
 INPUT_STUDY_FEATURES = parser.parse_args().input_study_features
+USED_OPTIMIZER = parser.parse_args().used_optimizer
+LOSS_FUNCTION = parser.parse_args().loss_function
+HUBER_PARAMETER = parser.parse_args().huber_parameter
 DEVICE = parser.parse_args().device
 
 def objective(trial):
@@ -63,7 +71,7 @@ def objective(trial):
     # Build training and validation splits here from the API-fetched dataframe.
     lstm_data = preprocessor.prepare_lstm_data(processed_data.reset_index(), symbols = SYMBOLS,
                                                sequence_length = lstm_shape_lag,
-                                               target_col = 'Log_Returns',
+                                               target_col = 'Close',
                                                prediction_horizon=1,
                                                date_splits =  {
                                                    'train': config_dates['train'],
@@ -87,7 +95,18 @@ def objective(trial):
                                                  dropout=dropout_sug,
                                                  output_size=1)
 
-    optimizing_criterion = torch.nn.L1Loss()
+    if LOSS_FUNCTION == 'mae':
+        optimizing_criterion = torch.nn.L1Loss()
+    elif LOSS_FUNCTION == 'mse':
+        optimizing_criterion = torch.nn.MSELoss()
+    elif LOSS_FUNCTION == 'huber':
+        if HUBER_PARAMETER is not None:
+            optimizing_criterion = torch.nn.HuberLoss(delta=float(HUBER_PARAMETER))
+        else:
+            optimizing_criterion = torch.nn.HuberLoss()
+    else:
+        raise ValueError("Invalid loss function. Please choose from 'mae', 'mse', or 'huber'.")
+
     train_data = torch.utils.data.TensorDataset(torch.tensor(lstm_data['X_train'], dtype=torch.float32),
                                                 torch.tensor(lstm_data['y_train'], dtype=torch.float32))
     val_data = torch.utils.data.TensorDataset(torch.tensor(lstm_data['X_val'], dtype=torch.float32),
@@ -101,7 +120,7 @@ def objective(trial):
                                                 optimizer=used_optimizer,
                                                 epochs = 1000,
                                                 #max_epochs_per_cycle=max_epochs_per_cycle,
-                                                patience=10,
+                                                patience=50,
                                                 min_delta=1e-5,
                                                 batch_size=batch_size,
                                                 optimizer_metric='mae',
@@ -114,6 +133,6 @@ storage_name = "sqlite:///mydb_lstm_5minprediction.db"
 
 if __name__ == "__main__":
     study = optuna.load_study(
-        study_name="lstm_crypto_study_mean_function_minmax", storage=storage_name
+        study_name="lstm_crypto_study_mean_function_minmax_morepatience", storage=storage_name
     )
     study.optimize(objective, n_trials=40)

@@ -9,8 +9,25 @@ import torch
 import gpytorch
 from gpytorch.kernels import Kernel
 
+class PretrainedEmbeddingExtractor(torch.nn.Module):
+    """Use a frozen pretrained LSTM hidden state as the GP kernel feature."""
+
+    def __init__(self, pretrained_model: torch.nn.Module):
+        super().__init__()
+        self.pretrained_model = pretrained_model
+        for parameter in self.pretrained_model.parameters():
+            parameter.requires_grad = False
+
+    def forward(self, x):
+        with torch.no_grad():
+            _, (hidden_state, _) = self.pretrained_model.lstm(x)
+        return hidden_state[-1]
+
+
 class lstm_extractor_same_size_layers(torch.nn.Module): 
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int, output_size: int, dropout: float = 0.00):
+    def __init__(self, input_size: int, hidden_size: int, 
+                 num_layers: int, output_size: int, 
+                 dropout: float = 0.00):
         """Provides the feature extractor for the Deep Kernel SVGP model. 
         It consists of an LSTM with the same hidden size for all layers, followed by a 
         fully connected layer to produce the final output features.
@@ -23,14 +40,17 @@ class lstm_extractor_same_size_layers(torch.nn.Module):
             dropout (float, optional): dropout probability in lstm. layers. Defaults to 0.00.
         """
         super(lstm_extractor_same_size_layers, self).__init__()
-        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, 
+                                  batch_first=True, dropout=dropout)
         self.fc = torch.nn.Linear(hidden_size, output_size)
+        #self.activation_fc = torch.nn.Sigmoid()
 
     def forward(self, x):
         """Forward pass through the LSTM feature extractor. Returns the last hidden state of the last LSTM layer.
         """
         output, (h_n, c_n) = self.lstm(x)
-        #print(h_n)
+        #out_features = self.fc(h_n[-1])
+        #out_features = self.activation_fc(out_features)
         return h_n[-1]
 
 class lstm_extractor_different_size_layers(torch.nn.Module):

@@ -30,12 +30,24 @@ class LSTMGeneralized_Output_SameSize(Mean):
         out = self.fc(lstm_out[:, -1, :])
         return out
 
-class LSTM_Pre_Trained_Mean_Function(Mean):
-   
+    def provide_embedding(self, x):
+       output, (h_n, c_n) = self.lstm(x)
+       return h_n[-1]  # Return the last hidden state of the last LSTM
+              
+
+class LSTMPreTrainedMeanFunction(Mean):
   def __init__(self, pretrained_model: nn.Module, device: torch.device = torch.device('cpu')):
-      super(LSTM_Pre_Trained_Mean_Function, self).__init__()
-      self.pretrained_model = pretrained_model.to(device)
+      """Transforms a pre-trained LSTM model into a GPyTorch mean function.
+
+      Args:
+          pretrained_model (nn.Module): A pre-trained LSTM model.
+          device (torch.device, optional): The device to run the model on. Defaults to torch.device('cpu').
+      """
+      super(LSTMPreTrainedMeanFunction, self).__init__()
       self.device = device
+      self.pretrained_model = pretrained_model.to(device)
+      for param in self.pretrained_model.parameters():
+          param.requires_grad = False
     
   def forward(self, x):
       self.pretrained_model.eval()
@@ -47,7 +59,7 @@ class LSTM_Pre_Trained_Mean_Function(Mean):
 class LSTMMean_function(Mean):
 
     def __init__(self, input_shape: tuple[int], hidden_size: list[int], 
-                 dropout: list[float], output_dimension: int, device: torch.device = torch.device('cpu')):
+                 num_layers: list[int], dropout: list[float], output_dimension: int, device: torch.device = torch.device('cpu')):
         super(LSTMMean_function, self).__init__()
         self.input_shape = input_shape
         self.sizes = hidden_size.copy()

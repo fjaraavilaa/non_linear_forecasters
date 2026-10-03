@@ -7,6 +7,7 @@ the LSTM model for volatility prediction with uncertainty quantification.
 author: @fjaraavila
 """
 
+import logging
 import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -18,15 +19,16 @@ import torch
 import torch.nn as nn
 from gpytorch.kernels import Kernel, ScaleKernel
 from gpytorch.models import ApproximateGP
+from gpytorch.means import ConstantMean
 from gpytorch.variational import (
     CholeskyVariationalDistribution,
     MultitaskVariationalStrategy,
     VariationalStrategy,
     NaturalVariationalDistribution,
 )
-
 from src.mean_functions import LSTMMean_function
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class LatentSVGP(ApproximateGP):
     def __init__(
@@ -34,7 +36,9 @@ class LatentSVGP(ApproximateGP):
         inducing_points: torch.Tensor,
         base_kernel: Kernel,
         device: torch.device = torch.device("cpu"),
+        mean_function: gpytorch.means.Mean = None,
         learn_inducing_locations: bool = True,
+        use_mean_function_features: bool = False,
         use_natural_gradient: bool = True,
     ):
         """
@@ -65,13 +69,32 @@ class LatentSVGP(ApproximateGP):
         )
         super().__init__(variational_strategy)
 
-        self.mean_module = gpytorch.means.ConstantMean()
+        self.mean_module = mean_function if mean_function is not None else ConstantMean()
+        logging.info(f"Mean function used in SVGP: {self.mean_module.__class__.__name__}")
+        self.mean_pretrained = mean_function is not None
+        self.use_mean_function_features = use_mean_function_features
 
         self.covar_module = ScaleKernel(base_kernel)
         self.to(device)
 
-    def forward(self, z):
-        mean_z = self.mean_module(z)
+    def forward(self, z, x_seq=None):
+        if x_seq is not None:
+            test_mean = self.mean_module(x_seq)
+            if z.size(-2) == x_seq.size(0):
+                mean_z = test_mean
+            else:
+                num_inducing = z.size(-2) - x_seq.size(0)
+                inducing_mean = torch.zeros(
+                    num_inducing,
+                    device=test_mean.device,
+                    dtype=test_mean.dtype,
+                )
+                mean_z = torch.cat([inducing_mean, test_mean], dim=0)
+        else: 
+            mean_z = self.mean_module(z)
+        ###This is a trick to work with LSTM meanwhile
+        if self.use_mean_function_features:
+            z = self.mean_module.provide_embedding(z)
         covar_z = self.covar_module(z)
         return gpytorch.distributions.MultivariateNormal(mean_z, covar_z)
 
@@ -84,9 +107,13 @@ class DeepKernelSVGP(gpytorch.Module):
     def forward(self, x_seq) -> gpytorch.distributions.MultivariateNormal:
         output = self.feature_extractor(x_seq)
         #print(f"Features extracted by LSTM: {output.shape}")
-        output = self.inferential_process(output)
+        if self.inferential_process.mean_pretrained:
+            output = self.inferential_process(output, x_seq=x_seq)
+        else:
+            output = self.inferential_process(output)
         #print(f"Output from SVGP: {output.mean.shape}, {output.covariance_matrix.shape}")
         return output
+
 
 
 class Univariate_SVGP(ApproximateGP):

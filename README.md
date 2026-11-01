@@ -1,321 +1,126 @@
-# LSTM Cryptocurrency Prediction with Deep Kernel Learning
+# Non-Linear Forecasters
 
-This is a Deep Kernel Learning project I decided to do after my PhD. I was just annoyed at the fact that I never found GPs used with LSTMs. Might sound a bit stubborn but I thought it could help someone (like me at some points).
+An experimental time-series forecasting repository. Its main model combines an LSTM feature extractor with a sparse variational Gaussian process; the repository also includes LSTM-only and TimeFM experiments. The work began with market data because it is readily available at several frequencies, but the code is intended as a starting point for forecasting experiments rather than a trading system.
 
-## Project Overview
+The idea started as an initial project to use LSTMs and Gaussian Processes. The idea is to, given the embeddings of the LSTM, help with the estimation of the second moment. With these it is meant to have a covariance estimation of the final tasks in order to provide a proper analytical result. 
 
-This project implements an end-to-end pipeline for cryptocurrency returns and volatility prediction using hybrid deep learning models. It combines Long Short-Term Memory (LSTM) neural networks with Gaussian Processes (GPyTorch) to leverage the strengths of both approaches: LSTM's temporal feature extraction and GP's uncertainty quantification.
+During the development of this tool, Google also published TimeFM 3.0. Due to it's capacity to provide quantiles it was also implemented in a naïve way, for future benchmarks.
 
-The architecture supports three model variants:
-- **LSTM Model**: Standalone LSTM for direct prediction
-- **Gaussian Process Model**: Multi-task sparse variational GP with uncertainty estimates
-- **Hybrid LSTM-GP Model**: LSTM feature extractor feeding into a GP predictor
+The idea is to also implement other non-linear forecasters and be capable of comparing them with ARIMA-ARFIMA and ARCH methdologies. 
 
-*I am not very interested in the crypto usage. Please use things as you please. But do not make crypto claims based on this.*
+## What is here
 
-## Project Structure
+- An LSTM + Gaussian-process model, implemented with PyTorch and GPyTorch.
+- LSTM-only training and prediction scripts.
+- Optuna studies for the LSTM/GP, LSTM-only, price, and TimeFM experiments.
+- Binance and Yahoo Finance data collectors.
+- Preprocessing for OHLCV data, returns, scaling, and fixed-length sequences.
+- Notebooks and tests used while developing the models.
 
-*It's still a bit messy. Consider it a to do.*
+The Gaussian-process model is sparse and variational, so it can work with learned LSTM features without requiring an exact GP over the full training set. Its outputs include a predictive distribution, rather than only a point estimate.
+
+## Repository layout
 
 ```
-├── main.py                          # Main training pipeline
-├── requirements.txt                 # Python dependencies
-├── README.md                        # This file
-├── __init__.py
+.
+├── main.py                         # Train or run the LSTM + GP workflow
+├── crypto_screener.py               # Simple crypto screening utility
+├── requirements.txt
 ├── src/
-│   ├── binance_data_collector.py   # Real-time data fetching
-│   ├── data_preprocessor.py        # Feature engineering
-│   ├── lstm_model.py               # LSTM architecture
-│   ├── gpytorch_model.py           # GP and hybrid model implementations
-│   ├── deep_kernel.py              # Deep kernel feature extractors
-│   ├── training_functions.py       # Training routines
-│   ├── optuna_trial_function.py    # Hyperparameter search for hybrid model
-│   ├── optuna_trial_lstm_function.py # Hyperparameter search for LSTM
-│   ├── study_start.py              # Initialize Optuna study
-│   ├── mean_functions.py           # GP mean function definitions
-│   └── help_functions/
-│       └── predictor.py            # Model inference utilities
-├── tests/                           # Unit tests
-├── validation/                      # Validation dataset and configuration
-│   ├── create_healthy_validation_dataset.ipynb
-│   ├── healthy_dates.json          # Train/test date splits
-│   └── healthy_data/               # Pre-processed validation data
-└── data/                            # Cryptocurrency data storage
+│   ├── binance_data_collector.py    # Binance OHLCV collection
+│   ├── stock_data_collector.py      # Yahoo Finance OHLCV collection
+│   ├── data_preprocessor.py         # Features, scaling, and sequence creation
+│   ├── lstm_model.py                # LSTM models
+│   ├── gpytorch_model.py            # Sparse variational GP models
+│   ├── deep_kernel.py               # LSTM feature extractors for the GP
+│   ├── training_functions.py         # Training and evaluation helpers
+│   ├── timefm_functions.py           # TimeFM setup and forecasting helpers
+│   ├── optuna_trial_*.py            # Hyperparameter-search entry points
+│   └── study_start*.py               # Optuna study setup scripts
+├── validation/                      # Date splits used by the experiments
+├── tests/                           # Tests and exploratory test notebooks
+└── *.ipynb                          # Analysis and plotting notebooks
 ```
 
-*Generated artifacts (created during training) are saved in the root directory: trained models, metrics, optimization results, and visualizations.*
+## Setup
 
-## Setup and Installation
+Python 3.10 is the intended environment. Create a virtual environment, then install the dependencies:
 
-### Prerequisites
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-- Python 3.10
-- PyTorch 2.0+ (with CUDA support optional but recommended)
-- GPyTorch 1.11+
+PyTorch uses the CPU by default unless a compatible CUDA build is installed. If you are working on a machine without CUDA, pass `--device cpu` to scripts that take a device argument.
 
-### Installation Steps
+## Running the LSTM + GP experiment
 
-1. **Create and activate a virtual environment:**
-   ```bash
-   python3.10 -m venv .venv
-   source .venv/bin/activate  # On macOS/Linux
-   # or
-   .venv\Scripts\activate     # On Windows
-   ```
+`main.py` reads the date split from `validation/healthy_dates.json`, downloads data from Binance, prepares sequences, and trains the deep-kernel GP using the checked-in best-parameter files. You can play around with it
 
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+python main.py --symbols BTC-USD --device cpu
+```
 
-3. **Verify installation:**
-   ```bash
-   python -c "import torch; import pandas; import gpytorch; print('Dependencies installed successfully!')"
-   ```
-
-## Usage
-
-### Quick Start: Training with Best Hyperparameters
-
-To train a model using the pre-optimized hyperparameters:
+The input features default to `Log_Returns`. You can supply a different set when the corresponding columns are available:
 
 ```bash
 python main.py \
   --symbols BTC-USD \
-  --input_study_features Returns Volume Count \
-  --device cuda
+  --input_study_features Log_Returns Volume Count \
+  --device cpu
 ```
 
-### Hyperparameter Optimization
+The scripts were written for specific studies and some settings, such as the Binance interval and model parameters, remain in the source. Treat the command-line arguments as overrides, not as a complete configuration system.
 
-The project uses Optuna for automated hyperparameter tuning. Run optimization in two steps:
+This is mainly for test purposes.
 
-1. **Initialize the study:**
-   ```bash
-   python -m src.study_start
-   ```
+## Hyperparameter searches
 
-2. **Run optimization trials** (for hybrid LSTM-GP model):
-   ```bash
-   python -m src.optuna_trial_function \
-     --symbols BTC-USD \
-     --input_study_features Returns Volume Count \
-     --device cuda
-   ```
-
-3. **Alternative: Run LSTM-only optimization:**
-   ```bash
-   python -m src.optuna_trial_lstm_function \
-     --symbols BTC-USD \
-     --input_study_features Returns Volume Count \
-     --device cuda
-   ```
-
-### Parallel Hyperparameter Search (HPC Clusters)
-
-For distributed optimization on HPC systems using SLURM:
+The Optuna scripts keep their studies in local SQLite files. Start the relevant study before launching trials:
 
 ```bash
+# LSTM + GP
 python -m src.study_start
+python -m src.optuna_trial_function --symbols BTC-USD --device cpu
 
-# Submit multiple parallel trials
-srun --ntasks=1 --gres=gpu:1 --exact python -m src.optuna_trial_function \
-  --symbols BTC-USD --input_study_features Returns Volume Count --device cuda &
-srun --ntasks=1 --gres=gpu:1 --exact python -m src.optuna_trial_function \
-  --symbols BTC-USD --input_study_features Returns Volume Count --device cuda &
-wait
+# LSTM only
+python -m src.optuna_trial_lstm_function --symbols BTC-USD --device cpu
+
+# TimeFM
+python -m src.study_start_timefm
+python -m src.optuna_trial_timefm_function --symbols BTC-USD --interval 1h
 ```
 
-
-
-## Configuration Options
-
-### General Arguments
-
-- `--symbols`: Cryptocurrency symbols to predict (default: `['BTC-USD']`)
-  - Examples: `BTC-USD`, `ETH-USD`, `XRP-USD`
-  - Multiple symbols: `--symbols BTC-USD ETH-USD XRP-USD`
-- `--input_study_features`: Features to use in model training (default: `['Returns']`)
-  - Available: `Returns`, `Volume`, `Count`, technical indicators
-- `--device`: Computation device (default: `cuda`)
-  - Options: `cuda` (GPU), `cpu`
-
-### Data Collection Parameters
-
-- `--interval`: Binance API interval for data fetching (default: `1m`)
-  - Options: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
-- `--binance-api-key`: Optional Binance API key for higher rate limits
-
-### Model Architecture Parameters
-
-- `--sequence-length`: Number of time steps in LSTM input (default: `30`)
-- `--hidden-size`: Number of hidden units in LSTM (default: `128`)
-- `--num-layers`: Number of stacked LSTM layers (default: `2`)
-- `--dropout`: Dropout probability for regularization (default: `0.2`)
-
-### Training Parameters
-
-- `--epochs`: Maximum number of training epochs (default: `100`)
-- `--batch-size`: Training batch size (default: `32`)
-- `--learning-rate`: Optimizer learning rate (default: `0.001`)
-- `--patience`: Early stopping patience in epochs (default: `10`)
-
-### GPyTorch-Specific Parameters
-
-- `--model-type`: Model architecture to use (default: `hybrid`)
-  - Options: `lstm` (LSTM only), `gp` (Gaussian Process only), `hybrid` (LSTM + GP)
-- `--num-inducing`: Number of inducing points for sparse GP (default: `100`)
-- `--gp-epochs`: Training epochs for pure GP model (default: `100`)
-- `--gp-learning-rate`: Learning rate for GP optimization (default: `0.01`)
-- `--gp-feature-dim`: Feature dimension for GP in hybrid model (default: `32`)
-- `--lstm-hidden-size`: LSTM hidden size in hybrid model (default: `64`)
-- `--gp-init-samples`: Samples for GP initialization (default: `1000`)
-
-## Model Architecture
-
-### LSTM Model
-
-A standard multi-layer LSTM architecture for time series prediction:
-
-- **Multi-layer LSTM**: Configurable number of stacked LSTM layers with shared hidden size
-- **Batch-first input**: Accepts sequences of shape (batch_size, sequence_length, features)
-- **Dropout Regularization**: Applied between LSTM layers to prevent overfitting
-- **Output Layer**: Fully connected layer mapping LSTM hidden state to prediction
-- **Training Features**: Early stopping based on validation loss
-
-**Use case**: Direct time series prediction without uncertainty estimates.
-
-### Gaussian Process Model
-
-Multi-task sparse variational Gaussian process with GPyTorch:
-
-- **Sparse Variational Inference**: Uses inducing points for computational efficiency
-- **Kernel**: Technically you can choose the kernel
-- **Uncertainty Quantification**: Provides prediction confidence intervals
-
-**Use case**: Uncertainty-aware predictions for risk assessment and confidence intervals.
-
-### Hybrid LSTM-GP Model (Recommended)
-
-Combines LSTM feature extraction with Gaussian Process prediction:
-
-1. **Feature Extraction**: LSTM encodes temporal sequences into fixed-dimensional features
-2. **Feature Output**: Last hidden state from LSTM is transformed into GP input features
-3. **GP Prediction**: Sparse variational GP makes predictions with uncertainty from LSTM features
-4. **Joint Optimization**: End-to-end training optimizes both components simultaneously
-
-**Advantages**:
-- Captures complex temporal patterns via LSTM
-- Provides uncertainty estimates via GP
-- More sample-efficient than pure GP
-- Better generalization than LSTM alone
-
-**Use case**: Production predictions combining accuracy and uncertainty quantification.
-
-### Feature Engineering
-
-The data preprocessing pipeline creates:
-
-- **Price Features**: Open, High, Low, Close, Volume
-- **Returns**: Price change ratios for stationarity
-- **Technical Indicators**: RSI, Moving Averages, Bollinger Bands, Average True Range (ATR) (I AM NOT USING THEM, JUST ADDED THE CODE WITH AI IN CASE I NEEDED THEM)
-- **Volatility Measures** (IDEM):
-  - Parkinson Volatility: $\sqrt{\frac{\ln(H/L)^2}{4\ln(2)}}$ (High-Low range)
-  - Garman-Klass Volatility: Incorporates Open-High-Low-Close data
-  - Rogers-Satchell Volatility: Drift-independent estimator
-- **Lagged Features**: Previous timestep values for temporal context
-- **Normalized Values**: Ratios and standardized features for model stability
-
-## Outputs and Results
-
-After training completes, the following artifacts are saved:
-
-- **Trained Model**: PyTorch model weights (`.pt` file)
-- **Training Metrics**: JSON file containing:
-  - Training loss history
-  - Validation loss history
-  - Performance metrics per epoch
-  - Final model performance
-- **Optimization History**: Optuna study results and visualizations (HTML contour plots)
-- **Hyperparameter Configuration**: Best parameters from hyperparameter search (`best_trial_params.json`)
-- **Predictions**: Numpy arrays or DataFrames with model predictions and confidence intervals (for GP models)
-
-Results are organized by date/timestamp for easy tracking and reproducibility.
-
-## Testing
-
-Unit tests are provided in the `tests/` directory:
+The TimeFM search can optionally receive historical columns as covariates:
 
 ```bash
-# Run all tests
-python -m pytest tests/
-
-# Run specific test file
-python -m pytest tests/test_model.py
-
-# Run with coverage
-python -m pytest tests/ --cov=src/
+python -m src.optuna_trial_timefm_function \
+  --symbols BTC-USD \
+  --interval 1h \
+  --covariates Volume Count
 ```
 
-Test coverage includes:
-- Data collection and preprocessing validation
-- Model initialization and forward passes
-- Training routine correctness
-- Prediction consistency
-- Loss computation
+Running several trial processes against the same SQLite study is possible, but it is worth checking the database and hardware setup first. The experiments can download a substantial amount of intraday data and, in the LSTM/GP case, benefit from a GPU.
 
-## Validation Dataset
+## Data and outputs
 
-The `validation/` directory contains:
+The Binance collector accepts symbols such as `BTC-USD` and converts them to the format used by the exchange. The stock collector uses Yahoo Finance tickers. Both return the common OHLCV-style schema consumed by `DataPreprocessor`.
 
-- **healthy_dates.json**: Train/test date splits ensuring valid timestamp ranges
+Training and search runs may create model checkpoints, metrics, Optuna SQLite databases, and plotting artefacts in the repository directory. Keep results you care about outside the working tree or add an experiment-specific output path before running large batches.
 
-These are used to ensure consistent train/test splits across experiments.
+## Tests
 
-## Known Limitations and Future Work
+There are regular Python tests alongside exploratory notebook tests. Run the Python tests with. These are under the ```/tests``` directory. You can run them as 
 
-- **Stationarity**: Returns are used instead of raw prices due to unit root issues
-- **Data Staleness**: Binance API rate limits may affect high-frequency data collection
-- **Change to Multi-Tasks/Multi-Target**: Current implementation is not yet multi-task. but i am working on it. I just want to do it properly with BTC before making it more complex.
-- **Hyperparameter Search**: Optuna search space can be extended for deeper exploration
+```bash
+python test_lstm
+```
 
-## Contributing
+## Notes and limitations
 
-Contributions are welcome! Please follow these guidelines:
+This is research code under active development. The scripts and notebooks reflect individual experiments, so naming and configuration are not yet fully uniform. A clean run also depends on data availability from the upstream providers.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
-3. Commit changes with clear messages
-4. Add or update tests as needed
-5. Submit a pull request with a clear description
+Market data is used here as a forecasting dataset. It does not make the models suitable for trading or investment decisions, and no result in this repository should be interpreted as financial advice or a claim of reliable market prediction.
 
-## License
-
-This project is provided as-is for educational and research purposes.
-
-## Disclaimer
-
-**Educational Use Only**: This project is for educational and research purposes. Cryptocurrency markets are highly volatile and inherently unpredictable. 
-
-**Trading Risk**: Do not use these predictions for actual financial trading or investment.
-
-The authors assume no responsibility for financial losses resulting from use of this code.
-
-*Also, I do not believe in cryptocurrencies. But their dataset is quite extensive and useful for time series research.*
-
-## References
-
-- **GPyTorch**: Gaussian Processes with PyTorch
-  - Gardner et al., "GPyTorch: Blackbox Matrix-Matrix Gaussian Process Inference with GPU Acceleration" (NEURIPS 2018)
-  
-- **Optuna**: Hyperparameter Optimization Framework
-  - Akiba et al., "Optuna: A Next-generation Hyperparameter Optimization Framework" (KDD 2019)
-
-- **Volatility Estimation**:
-  - Parkinson (1980): A simple volatility estimator
-  - Garman & Klass (1980): On the estimation of security price volatilities
-  - Rogers & Satchell (1991): Estimating variance from high, low and closing prices
-
----
-
-**Author**: Originally developed as a post-PhD research project exploring the combination of LSTM feature extraction with Gaussian Process uncertainty quantification for time series prediction. This is a fun project for me. Most of this Readme is AI. I did check it beforehand but I don't have the inspiration to write such texts.
+Please be mindful that 1) This is not developed by experts in finance. 2) This is entirely a personal project for intellectual and fun purposes. 3) I don't believe in the entirety of the cryptocurrencies project, but their data is quite extensive.

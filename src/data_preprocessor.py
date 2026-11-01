@@ -57,7 +57,7 @@ class DataPreprocessor:
             raise ValueError(f"Missing OHLC columns: {missing}")
         
         # Calculate simple and continuously compounded returns
-        data['Returns'] = data.groupby('Symbol')['Close'].pct_change()
+        data['Returns'] = data.groupby('Symbol')['Close'].diff()
         data['Log_Returns'] = data.groupby('Symbol')['Close'].transform(
             lambda prices: np.log(prices).diff()
         )
@@ -85,8 +85,9 @@ class DataPreprocessor:
         
         # Average True Range
         data['High_Low'] = data['High'] - data['Low']
-        data['High_Close'] = abs(data['High'] - data['Close'].shift(1))
-        data['Low_Close'] = abs(data['Low'] - data['Close'].shift(1))
+        previous_close = data.groupby('Symbol')['Close'].shift(1)
+        data['High_Close'] = abs(data['High'] - previous_close)
+        data['Low_Close'] = abs(data['Low'] - previous_close)
         data['True_Range'] = data[['High_Low', 'High_Close', 'Low_Close']].max(axis=1)
         
         data['ATR_14'] = (
@@ -194,7 +195,7 @@ class DataPreprocessor:
         else:
             warnings.warn("No OHLC data found, skipping volatility calculations")
             if 'Close' in data.columns:
-                data['Returns'] = data.groupby('Symbol')['Close'].pct_change()
+                data['Returns'] = data.groupby('Symbol')['Close'].diff()
                 data['Log_Returns'] = data.groupby('Symbol')['Close'].transform(
                     lambda prices: np.log(prices).diff()
                 )

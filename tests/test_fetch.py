@@ -1,5 +1,6 @@
 from src.binance_data_collector import BinanceDataCollector
 from src.data_preprocessor import DataPreprocessor
+from src.stock_data_collector import StockDataCollector
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -66,5 +67,24 @@ def test_transform_to_lstm_matrix():
     logging.info(f"y_train shape: {lstm_data['y_train'].shape}")
     return lstm_data
 
-
 test_transform_to_lstm_matrix()
+
+def test_fetch_yfinance():
+    collector = StockDataCollector()
+    
+    symbol = 'AAPL'
+    interval = '1d'
+    start_time = '2024-01-01'
+    end_time = '2024-01-15'
+
+    data = collector.fetch_stock_data(symbols=[symbol], interval=interval, 
+                                      start_date=start_time, end_date=end_time)
+    
+    assert data is not None, "Data should not be None"
+    assert len(data) > 0, "Data should contain at least one entry"
+    
+    logging.info("Yahoo Finance data fetching test passed!")
+    return data
+
+test_fetch_yfinance()
+

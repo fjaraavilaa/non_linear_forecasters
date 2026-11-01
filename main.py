@@ -4,7 +4,7 @@ from gpytorch.kernels import MaternKernel, PeriodicKernel
 from src.gpytorch_model import LatentSVGP, DeepKernelSVGP
 from src.binance_data_collector import BinanceDataCollector
 from src.data_preprocessor import DataPreprocessor
-from src.deep_kernel import lstm_extractor_same_size_layers
+from src.deep_kernel import LstmExtractorSameSizeLayers
 from src.training_functions import train_with_gp
 from src.help_functions.predictor import predict_with_trained_model, create_df_from_predictions
 from src.lstm_model import LSTMGeneralized_Output_SameSize
@@ -107,7 +107,7 @@ def main():
             pretrained_lstm.load_state_dict(mean_function_configs['model_state_dict'])
             pretrained_lstm.eval()
             mean_function = LSTMPreTrainedMeanFunction(pretrained_lstm, DEVICE)
-        feature_extractor = lstm_extractor_same_size_layers(
+        feature_extractor = LstmExtractorSameSizeLayers(
             input_size=lstm_data['X_train'].shape[2],
             hidden_size=config_best_values['lstm_hidden_size'],
             num_layers=config_best_values['num_layers'],

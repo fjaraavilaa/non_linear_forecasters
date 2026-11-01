@@ -13,7 +13,7 @@ from src.lstm_model import LSTMGeneralized_Output_SameSize
 from src.training_functions import train_lstm_model
 from src.binance_data_collector import BinanceDataCollector
 from src.data_preprocessor import DataPreprocessor
-from src.deep_kernel import lstm_extractor_same_size_layers
+from src.deep_kernel import LstmExtractorSameSizeLayers
 from src.training_functions import train_with_gp
 import argparse
 

@@ -153,6 +153,21 @@ class BinanceDataCollector:
                 symbols.append(symbol_info['symbol'])
         
         return sorted(symbols)
+
+    def get_24hr_ticker(self, symbols: Optional[List[str]] = None) -> List[dict]:
+        """Get Binance 24-hour ticker statistics for one or more symbols."""
+        if symbols:
+            tickers = []
+            for symbol in symbols:
+                ticker = self._make_request(
+                    "/api/v3/ticker/24hr",
+                    {'symbol': self.symbol_mapping.get(symbol, symbol)},
+                )
+                tickers.append(ticker)
+            return tickers
+
+        response = self._make_request("/api/v3/ticker/24hr")
+        return response if isinstance(response, list) else [response]
     
     def fetch_klines(
         self, 

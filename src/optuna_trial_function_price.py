@@ -13,7 +13,7 @@ from gpytorch.kernels import RBFKernel, MaternKernel, PeriodicKernel
 from src.gpytorch_model import LatentSVGP, DeepKernelSVGP
 from src.binance_data_collector import BinanceDataCollector
 from src.data_preprocessor import DataPreprocessor
-from src.deep_kernel import lstm_extractor_same_size_layers
+from src.deep_kernel import LstmExtractorSameSizeLayers
 from src.training_functions import train_with_gp
 from src.mean_functions import LSTMPreTrainedMeanFunction, LSTMMean_function
 from src.lstm_model import LSTMGeneralized_Output_SameSize
@@ -110,7 +110,7 @@ def objective(trial):
     inducing_points = torch.randn(inducing_points_n, lstm_data['X_train'].shape[1],
                                   lstm_data['X_train'].shape[2]).float()
 
-    feature_extractor = lstm_extractor_same_size_layers(
+    feature_extractor = LstmExtractorSameSizeLayers(
         input_size = lstm_data['X_train'].shape[2],
         output_size = 1,
         hidden_size = lstm_hidden_size,
@@ -201,4 +201,15 @@ if __name__ == "__main__":
     study = optuna.load_study(
         study_name="lstm_cryptoraw_study_PeriodicMaternKernel", storage=storage_name
     )
-    study.optimize(objective, n_trials=40)
+    study.enqueue_trial({
+        'lstm_shape_lag': 100,
+        'lstm_hidden_size': 5,
+        'batch_size': 800,
+        'num_layers': 4,
+        'dropout': 0.34535811650964066,
+        'natural_gradient_lr': 0.01911230921773085,
+        'starting_learning_rate': 0.009185652089852132,
+        'max_epochs_per_cycle': 100,
+        'inducing_points': 650
+    })
+    study.optimize(objective, n_trials=40, catch=(Exception,))

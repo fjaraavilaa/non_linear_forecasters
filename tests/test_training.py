@@ -1,6 +1,6 @@
 from src.training_functions import train_with_gp
 from src.gpytorch_model import DeepKernelSVGP, LatentSVGP
-from src.deep_kernel import lstm_extractor_same_size_layers, lstm_extractor_different_size_layers
+from src.deep_kernel import LstmExtractorSameSizeLayers, LstmExtractorDifferentSizeLayers
 import torch
 from tests.test_fetch import test_transform_to_lstm_matrix
 from gpytorch.kernels import RBFKernel
@@ -15,7 +15,7 @@ dropout = 0.1
 output_dimension = 1
 number_hidden_lstm_kernel = 2
 
-feature_extractor = lstm_extractor_same_size_layers(
+feature_extractor = LstmExtractorSameSizeLayers(
     input_size = input_shape[-1],  # input features
     hidden_size = hidden_size,
     num_layers = number_hidden_lstm_kernel,

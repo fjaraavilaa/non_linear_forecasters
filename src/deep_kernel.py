@@ -24,7 +24,7 @@ class PretrainedEmbeddingExtractor(torch.nn.Module):
         return hidden_state[-1]
 
 
-class lstm_extractor_same_size_layers(torch.nn.Module): 
+class LstmExtractorSameSizeLayers(torch.nn.Module): 
     def __init__(self, input_size: int, hidden_size: int, 
                  num_layers: int, output_size: int, 
                  dropout: float = 0.00):
@@ -39,7 +39,7 @@ class lstm_extractor_same_size_layers(torch.nn.Module):
             output_size (int): Size of the output from the sequence
             dropout (float, optional): dropout probability in lstm. layers. Defaults to 0.00.
         """
-        super(lstm_extractor_same_size_layers, self).__init__()
+        super(LstmExtractorSameSizeLayers, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, 
                                   batch_first=True, dropout=dropout)
         self.fc = torch.nn.Linear(hidden_size, output_size)
@@ -53,10 +53,10 @@ class lstm_extractor_same_size_layers(torch.nn.Module):
         #out_features = self.activation_fc(out_features)
         return h_n[-1]
 
-class lstm_extractor_different_size_layers(torch.nn.Module):
+class LstmExtractorDifferentSizeLayers(torch.nn.Module):
     def __init__(self, input_size: int, hidden_sizes: list, 
                  num_layers: int, output_size: int, dropout: float = 0.00):
-        super(lstm_extractor_different_size_layers, self).__init__()
+        super(LstmExtractorDifferentSizeLayers, self).__init__()
 
         self.hidden_sizes = hidden_sizes.copy()
         self.sizes = hidden_sizes.copy()

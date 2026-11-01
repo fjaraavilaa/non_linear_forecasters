@@ -10,3 +10,6 @@ _non_commit_garbage/
 _plots/
 .python-version
 *.png
+.venv/
+*.html
+*.json

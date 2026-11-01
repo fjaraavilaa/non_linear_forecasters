@@ -1,5 +1,5 @@
 import logging
-from src.deep_kernel import lstm_extractor_same_size_layers, lstm_extractor_different_size_layers
+from src.deep_kernel import LstmExtractorSameSizeLayers, LstmExtractorDifferentSizeLayers
 from src.data_preprocessor import DataPreprocessor
 from tests.test_fetch import test_fetch, test_transform_to_lstm_matrix
 from gpytorch.kernels import RBFKernel
@@ -18,7 +18,7 @@ def test_LSTMDeepKernel_same_size_layers():
         "output_size": 5
     }
     covar_function = RBFKernel()
-    extractor_features = lstm_extractor_same_size_layers(lstm_parameters["input_size"], 
+    extractor_features = LstmExtractorSameSizeLayers(lstm_parameters["input_size"], 
                                                          lstm_parameters["hidden_size"], 
                                                          lstm_parameters["num_layers"],
                                                          lstm_parameters["output_size"])
@@ -38,7 +38,7 @@ def test_LSTMDeepKernel_different_size_layers():
         "output_size": 10
     }
     covar_function = RBFKernel()
-    extractor_features = lstm_extractor_different_size_layers(lstm_parameters["input_size"], 
+    extractor_features = LstmExtractorDifferentSizeLayers(lstm_parameters["input_size"], 
                                                             lstm_parameters["hidden_sizes"], 
                                                             lstm_parameters["num_layers"],
                                                             lstm_parameters["output_size"],

@@ -195,22 +195,71 @@ class SARIMA(_SARIMAXModel):
         super().__init__(order, seasonal_order, model_name="sarima")
 
 
-def fractional_difference(values: Sequence[float], d: float, threshold: float = 1e-4) -> pd.Series:
-    """Apply fractional differencing while retaining the original index."""
+def _fractional_weights(length: int, d: float, threshold: float) -> np.ndarray:
+    if length < 1:
+        return np.array([], dtype="float64")
     if d < 0:
         raise ValueError("d must be non-negative")
-    series = _as_series(values)
     weights = [1.0]
-    for k in range(1, len(series)):
-        weight = -weights[-1] * (d - k + 1) / k
+    for _ in range(1, length):
+        weight = -weights[-1] * (d - len(weights) + 1) / len(weights)
         if abs(weight) < threshold:
             break
         weights.append(weight)
+    return np.asarray(weights, dtype="float64")
+
+
+def fractional_difference(
+    values: Sequence[float], d: float, threshold: float = 1e-4
+) -> pd.Series:
+    """Apply fractional differencing and drop the warm-up observations."""
+    if d < 0:
+        raise ValueError("d must be non-negative")
+    series = _as_series(values)
+    weights = _fractional_weights(len(series), d, threshold)
     output = np.full(len(series), np.nan)
     values_array = series.to_numpy()
-    for index in range(len(weights) - 1, len(series)):
-        output[index] = np.dot(weights, values_array[index - len(weights) + 1 : index + 1][::-1])
+    window = len(weights)
+    for index in range(window - 1, len(series)):
+        output[index] = np.dot(
+            weights, values_array[index - window + 1 : index + 1][::-1]
+        )
     return pd.Series(output, name=series.name).dropna().reset_index(drop=True)
+
+
+def inverse_fractional_difference(
+    values: Sequence[float],
+    history: Sequence[float],
+    d: float,
+    threshold: float = 1e-4,
+) -> pd.Series:
+    """Recover original-scale values from fractional-difference values.
+
+    ``history`` must contain the original-scale observations immediately before
+    the first value in ``values``. Each recovered value is appended to that
+    history before reconstructing the next one.
+    """
+    differenced = _as_series(values, name="fractional_difference")
+    original_history = _as_series(history, name="history")
+    weights = _fractional_weights(
+        len(original_history) + len(differenced), d, threshold
+    )
+    reconstructed = list(original_history.to_numpy())
+
+    for differenced_value in differenced.to_numpy():
+        lag_count = min(len(weights) - 1, len(reconstructed))
+        lag_values = reconstructed[-lag_count:][::-1] if lag_count else []
+        lag_weights = weights[1 : lag_count + 1]
+        reconstructed.append(
+            float(differenced_value)
+            - float(np.dot(lag_weights, lag_values))
+        )
+
+    return pd.Series(
+        reconstructed[-len(differenced) :],
+        index=differenced.index,
+        name="value",
+    )
 
 
 class _FractionalARIMA:
@@ -248,19 +297,10 @@ class _FractionalARIMA:
             raise RuntimeError("Call fit before forecast")
         prediction = self._fit.get_forecast(horizon)
         differenced_forecast = np.asarray(prediction.predicted_mean)
-        history = self._history.to_numpy()
-        weights = [1.0]
-        for k in range(1, len(history) + horizon):
-            weights.append(-weights[-1] * (self.d - k + 1) / k)
-        reconstructed = []
-        for step, differenced_value in enumerate(differenced_forecast):
-            prior = np.concatenate([history, np.asarray(reconstructed)])
-            value = differenced_value - np.dot(
-                np.asarray(weights[1 : min(len(weights), len(prior) + 1)]),
-                prior[-min(len(weights) - 1, len(prior)) :][::-1],
-            )
-            reconstructed.append(value)
-        mean = pd.Series(reconstructed, name="mean")
+        mean = inverse_fractional_difference(
+            differenced_forecast, self._history, self.d
+        )
+        mean.name = "mean"
         variance = pd.Series(np.asarray(prediction.var_pred_mean), index=mean.index, name="variance")
         return ForecastResult(
             mean=mean,

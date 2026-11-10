@@ -16,6 +16,8 @@ from src.classical_models import (
     SARIMA,
     ExponentialSmoothingModel,
     MovingAverage,
+    fractional_difference,
+    inverse_fractional_difference,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -147,6 +149,26 @@ def test_decision_signal_interface():
     ):
         validate_decision_signals(model)
 
+
+def test_fractional_difference_round_trip():
+    values = np.linspace(100.0, 130.0, 100)
+    fractional_values = fractional_difference(values, d=0.4)
+    warmup = len(values) - len(fractional_values)
+
+    reconstructed = inverse_fractional_difference(
+        fractional_values,
+        history=values[:warmup],
+        d=0.4,
+    )
+
+    np.testing.assert_allclose(
+        reconstructed.to_numpy(),
+        values[warmup:],
+        rtol=0.0,
+        atol=1e-10,
+    )
+
+
 test_moving_average()
 test_exponential_smoothing()
 test_arima()
@@ -156,3 +178,4 @@ test_sarfima()
 test_garch()
 test_aparch()
 test_decision_signal_interface()
+test_fractional_difference_round_trip()

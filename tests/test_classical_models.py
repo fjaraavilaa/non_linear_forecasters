@@ -9,9 +9,11 @@ sys.path.append(pl.Path.cwd().parent.as_posix())
 from src.binance_data_collector import BinanceDataCollector
 from src.classical_models import (
     APARCH,
+    ARFIMA_APARCH,
     ARFIMA,
     ARIMA,
     GARCH,
+    MeanVolatilityModel,
     SARFIMA,
     SARIMA,
     ExponentialSmoothingModel,
@@ -167,6 +169,121 @@ def test_fractional_difference_round_trip():
         rtol=0.0,
         atol=1e-10,
     )
+    print("Original values:", values[warmup:])
+    print("Reconstructed values:", reconstructed.to_numpy())
+    return reconstructed
+
+
+def test_arfima_forecast_reconstruction():
+    forecast = ARFIMA(d=0.4, order=(1, 0, 0)).fit(get_close_prices()).forecast(3)
+
+    assert len(forecast.mean) == 3
+    assert np.isfinite(forecast.mean.to_numpy()).all()
+    print("ARFIMA reconstructed forecast:", forecast.mean.to_numpy())
+    return forecast
+
+
+def test_arfima_aparch_forecast():
+    forecast = ARFIMA_APARCH(
+        d=0.4,
+        order=(1, 0, 0),
+        p=1,
+        o=1,
+        q=1,
+    ).fit(get_close_prices()).forecast(3)
+
+    assert len(forecast.mean) == 3
+    assert len(forecast.variance) == 3
+    assert np.isfinite(forecast.mean.to_numpy()).all()
+    assert np.isfinite(forecast.variance.to_numpy()).all()
+    print("ARFIMA-APARCH forecast:", forecast.mean.to_numpy())
+    print("ARFIMA-APARCH variance:", forecast.variance.to_numpy())
+    return forecast
+
+
+def test_all_mean_volatility_combinations():
+    model_configs = {
+        "arima_garch": {
+            "mean_model": "arima",
+            "volatility_model": "garch",
+            "order": (1, 0, 0),
+            "p": 1,
+            "o": 0,
+            "q": 1,
+        },
+        "arima_aparch": {
+            "mean_model": "arima",
+            "volatility_model": "aparch",
+            "order": (1, 0, 0),
+            "p": 1,
+            "o": 1,
+            "q": 1,
+        },
+        "sarima_garch": {
+            "mean_model": "sarima",
+            "volatility_model": "garch",
+            "order": (1, 0, 0),
+            "seasonal_order": (0, 0, 0, 24),
+            "p": 1,
+            "o": 0,
+            "q": 1,
+        },
+        "sarima_aparch": {
+            "mean_model": "sarima",
+            "volatility_model": "aparch",
+            "order": (1, 0, 0),
+            "seasonal_order": (0, 0, 0, 24),
+            "p": 1,
+            "o": 1,
+            "q": 1,
+        },
+        "arfima_garch": {
+            "mean_model": "arfima",
+            "volatility_model": "garch",
+            "d": 0.4,
+            "order": (1, 0, 0),
+            "p": 1,
+            "o": 0,
+            "q": 1,
+        },
+        "arfima_aparch": {
+            "mean_model": "arfima",
+            "volatility_model": "aparch",
+            "d": 0.4,
+            "order": (1, 0, 0),
+            "p": 1,
+            "o": 1,
+            "q": 1,
+        },
+        "sarfima_garch": {
+            "mean_model": "sarfima",
+            "volatility_model": "garch",
+            "d": 0.4,
+            "order": (1, 0, 0),
+            "seasonal_order": (0, 0, 0, 24),
+            "p": 1,
+            "o": 0,
+            "q": 1,
+        },
+        "sarfima_aparch": {
+            "mean_model": "sarfima",
+            "volatility_model": "aparch",
+            "d": 0.4,
+            "order": (1, 0, 0),
+            "seasonal_order": (0, 0, 0, 24),
+            "p": 1,
+            "o": 1,
+            "q": 1,
+        },
+    }
+
+    results = {}
+    for name, params in model_configs.items():
+        result = validate_forecast_shape(MeanVolatilityModel(**params))
+        results[name] = result
+        print(f"{name} mean:", result.mean.to_numpy())
+        print(f"{name} variance:", result.variance.to_numpy())
+    return results
 
 
 test_moving_average()
@@ -179,3 +296,6 @@ test_garch()
 test_aparch()
 test_decision_signal_interface()
 test_fractional_difference_round_trip()
+test_arfima_forecast_reconstruction()
+test_arfima_aparch_forecast()
+test_all_mean_volatility_combinations()

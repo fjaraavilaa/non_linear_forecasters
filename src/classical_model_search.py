@@ -10,6 +10,7 @@ each training fold, so a configuration cannot pass by relying on future data.
 from __future__ import annotations
 
 import argparse
+import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ import pandas as pd
 
 from src.classical_models import (
     APARCH,
+    MeanVolatilityModel,
     ARFIMA,
     ARIMA,
     GARCH,
@@ -85,13 +87,16 @@ def check_assumptions(model: Any, values: Sequence[float], alpha: float = 0.05) 
     """
     series = _finite_series(values)
     checks: Dict[str, float | bool | str] = {}
-    is_volatility = isinstance(model, (GARCH, APARCH))
+    is_volatility = isinstance(model, (GARCH, APARCH, MeanVolatilityModel))
+    is_composite = isinstance(model, MeanVolatilityModel)
     is_fractional = isinstance(model, (ARFIMA, SARFIMA))
     is_arima = isinstance(model, (ARIMA, SARIMA))
 
     if is_volatility:
         if (series <= 0).any():
             return AssumptionReport(False, {"positive_prices": False})
+        transformed = 100 * np.log(series / series.shift(1)).dropna()
+    elif is_composite:
         transformed = 100 * np.log(series / series.shift(1)).dropna()
     elif is_fractional:
         transformed = fractional_difference(series, model.d)
@@ -127,7 +132,7 @@ def check_assumptions(model: Any, values: Sequence[float], alpha: float = 0.05) 
         # training level are the relevant whiteness diagnostic.
         residuals = (series - model._level).to_numpy(dtype="float64")
     else:
-        fitted = model._fit
+        fitted = model._volatility_fit if is_composite else model._fit
         residuals = np.asarray(
             getattr(fitted, "std_resid", getattr(fitted, "resid", [])), dtype="float64"
         )
@@ -154,6 +159,14 @@ def build_model(model_name: str, params: Dict[str, Any]) -> Any:
         "garch": GARCH,
         "aparch": APARCH,
     }
+    if "_" in model_name:
+        mean_model, volatility_model = model_name.split("_", 1)
+        if mean_model in {"arima", "sarima", "arfima", "sarfima"} and volatility_model in {"garch", "aparch"}:
+            return MeanVolatilityModel(
+                mean_model=mean_model,
+                volatility_model=volatility_model,
+                **params,
+            )
     try:
         return factories[model_name](**params)
     except KeyError as error:
@@ -211,16 +224,92 @@ def suggest_parameters(trial: Any, model_name: str, seasonal_period: int = 0) ->
         p = trial.suggest_int("p", 1, 3)
         return {"p": p, "o": trial.suggest_int("o", 1, 3), "q": trial.suggest_int("q", 1, 3),
                 "distribution": trial.suggest_categorical("distribution", ["t", "ged", "normal"])}
+    if "_" in model_name:
+        mean_model, volatility_model = model_name.split("_", 1)
+        if mean_model in {"arima", "sarima", "arfima", "sarfima"} and volatility_model in {"garch", "aparch"}:
+            p = trial.suggest_int("vol_p", 1, 3)
+            mean_params = {
+                "order": (
+                    trial.suggest_int("mean_p", 0, 3),
+                    0,
+                    trial.suggest_int("mean_q", 0, 3),
+                ),
+            }
+            if mean_model in {"arfima", "sarfima"}:
+                mean_params["d"] = trial.suggest_float("fractional_d", 0.05, 0.95, step=0.05)
+            if mean_model in {"sarima", "sarfima"}:
+                if seasonal_period < 2:
+                    raise ValueError("Seasonal composite search requires a seasonal_period of at least 2")
+                mean_params["seasonal_order"] = (
+                    trial.suggest_int("mean_P", 0, 2),
+                    0,
+                    trial.suggest_int("mean_Q", 0, 2),
+                    seasonal_period,
+                )
+            if volatility_model == "garch":
+                asymmetry = 0
+            else:
+                asymmetry = trial.suggest_int("vol_o", 1, p)
+            return {
+                **mean_params,
+                "p": p,
+                "o": asymmetry,
+                "q": trial.suggest_int("vol_q", 1, 3),
+                "distribution": trial.suggest_categorical("distribution", ["t", "ged", "normal"]),
+            }
     raise ValueError(f"Unknown classical model: {model_name}")
 
 
 def rolling_origins(n_observations: int, horizon: int, folds: int) -> Iterable[int]:
+    """Return expanding-window forecast origins for chronological validation.
+
+    Every origin leaves one non-overlapping ``horizon``-sized test window after
+    it. The earliest origin is chosen so that all requested test windows fit at
+    the end of the series and the initial training window is large enough for
+    model fitting.
+    """
+    if n_observations < 1:
+        raise ValueError("n_observations must be positive")
     if horizon < 1 or folds < 1:
         raise ValueError("horizon and folds must be positive")
     first_end = n_observations - folds * horizon
     if first_end < max(24, horizon * 3):
         raise ValueError("Not enough observations for the requested rolling validation")
-    return range(first_end, n_observations - horizon + 1, horizon)
+    origins = tuple(range(first_end, n_observations - horizon + 1, horizon))
+    if len(origins) != folds:
+        raise ValueError("Could not create the requested number of rolling folds")
+    return origins
+
+
+def calendar_validation_origins(
+    dates: Sequence[pd.Timestamp],
+    date_splits: Dict[str, Dict[str, Any]],
+    horizon: int,
+    folds: int,
+) -> list[int]:
+    """Return origins relative to the train-plus-validation date series."""
+    timestamps = pd.to_datetime(pd.Series(dates)).reset_index(drop=True)
+    validation_start = pd.Timestamp(date_splits["validation"]["start"])
+    validation_end = pd.Timestamp(date_splits["validation"]["end"])
+    test_start = pd.Timestamp(date_splits["test"]["start"])
+
+    if validation_end >= test_start:
+        raise ValueError("Validation must end before the test window starts")
+
+    train_validation = timestamps[timestamps <= validation_end]
+    validation_positions = np.flatnonzero(
+        (
+            (train_validation >= validation_start)
+            & (train_validation <= validation_end)
+        ).to_numpy()
+    )
+    if len(validation_positions) < horizon * folds:
+        raise ValueError("Validation window is too short for the requested folds")
+
+    origin_offsets = np.linspace(
+        0, len(validation_positions) - horizon, folds, dtype=int
+    )
+    return [int(validation_positions[offset]) for offset in origin_offsets]
 
 
 def search_classical_model(
@@ -233,6 +322,7 @@ def search_classical_model(
     seasonal_period: int = 0,
     storage: Optional[str] = None,
     study_name: Optional[str] = None,
+    origins: Optional[Sequence[int]] = None,
 ) -> Any:
     """Run an assumption-aware, expanding-window Optuna search.
 
@@ -242,7 +332,16 @@ def search_classical_model(
     import optuna
 
     series = _finite_series(values)
-    origins = list(rolling_origins(len(series), horizon, folds))
+    validation_origins = list(origins) if origins is not None else list(
+        rolling_origins(len(series), horizon, folds)
+    )
+    if not validation_origins:
+        raise ValueError("At least one validation origin is required")
+    if any(
+        origin < 24 or origin + horizon > len(series)
+        for origin in validation_origins
+    ):
+        raise ValueError("Validation origins must leave enough training and test data")
 
     def objective(trial: Any) -> float:
         params = suggest_parameters(trial, model_name, seasonal_period)
@@ -253,7 +352,7 @@ def search_classical_model(
             raise optuna.TrialPruned("invalid APARCH order")
         errors = []
         reports = []
-        for origin in origins:
+        for origin in validation_origins:
             train = series.iloc[:origin]
             report = check_assumptions(build_model(model_name, params), train)
             reports.append(report.checks)
@@ -282,9 +381,32 @@ def search_classical_model(
 
 def _main() -> None:
     parser = argparse.ArgumentParser(description="Search classical forecasting model parameters")
-    parser.add_argument("csv", type=Path, help="CSV containing the historical series")
+    parser.add_argument("--symbols", nargs="+", default=["BTC-USD"])
+    parser.add_argument("--interval", default="1h")
+    parser.add_argument("--date-config", type=Path, default=Path("validation/healthy_dates.json"))
     parser.add_argument("--column", default="Close")
-    parser.add_argument("--model", choices=["moving_average", "exponential_smoothing", "arima", "sarima", "arfima", "sarfima", "garch", "aparch"], required=True)
+    parser.add_argument(
+        "--model",
+        choices=[
+            "moving_average",
+            "exponential_smoothing",
+            "arima",
+            "sarima",
+            "arfima",
+            "sarfima",
+            "garch",
+            "aparch",
+            "arima_garch",
+            "arima_aparch",
+            "sarima_garch",
+            "sarima_aparch",
+            "arfima_garch",
+            "arfima_aparch",
+            "sarfima_garch",
+            "sarfima_aparch",
+        ],
+        required=True,
+    )
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--trials", type=int, default=50)
@@ -292,15 +414,55 @@ def _main() -> None:
     parser.add_argument("--storage", help="Optuna storage URL, e.g. sqlite:///classical.db")
     parser.add_argument("--study-name")
     args = parser.parse_args()
-    data = pd.read_csv(args.csv)
-    if args.column not in data:
-        raise ValueError(f"Column {args.column!r} was not found in {args.csv}")
-    study = search_classical_model(
-        data[args.column], args.model, horizon=args.horizon, folds=args.folds,
-        trials=args.trials, seasonal_period=args.seasonal_period,
-        storage=args.storage, study_name=args.study_name,
+    from src.binance_data_collector import BinanceDataCollector
+
+    with args.date_config.open() as file:
+        date_splits = json.load(file)
+    data = BinanceDataCollector().fetch_crypto_data(
+        symbols=args.symbols,
+        interval=args.interval,
+        start_date=date_splits["train"]["start"],
+        end_date=date_splits["test"]["end"],
     )
-    print({"best_value_mae": study.best_value, "best_params": study.best_params})
+    symbol_data = (
+        data[data["Symbol"] == args.symbols[0]]
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    if args.column not in symbol_data:
+        raise ValueError(f"Column {args.column!r} was not found in Binance data")
+    timestamps = pd.to_datetime(symbol_data["Date"]).reset_index(drop=True)
+    validation_end = pd.Timestamp(date_splits["validation"]["end"])
+    test_start = pd.Timestamp(date_splits["test"]["start"])
+    test_end = pd.Timestamp(date_splits["test"]["end"])
+    train_validation = symbol_data[timestamps <= validation_end].reset_index(drop=True)
+    origins = calendar_validation_origins(
+        train_validation["Date"],
+        date_splits,
+        horizon=args.horizon,
+        folds=args.folds,
+    )
+    values = train_validation[args.column]
+    study = search_classical_model(
+        values, args.model, horizon=args.horizon, folds=args.folds,
+        trials=args.trials, seasonal_period=args.seasonal_period,
+        storage=args.storage, study_name=args.study_name, origins=origins,
+    )
+    test_data = symbol_data[
+        (timestamps >= test_start) & (timestamps <= test_end)
+    ]
+    model = build_model(args.model, study.best_params).fit(values)
+    forecast = model.forecast(len(test_data)).mean.to_numpy(dtype="float64")
+    actual = test_data[args.column].to_numpy(dtype="float64")
+    test_mae = float(np.mean(np.abs(forecast - actual)))
+    print(
+        {
+            "validation_mae": study.best_value,
+            "test_mae": test_mae,
+            "best_params": study.best_params,
+            "date_config": str(args.date_config),
+        }
+    )
 
 
 if __name__ == "__main__":

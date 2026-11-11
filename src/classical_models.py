@@ -329,6 +329,126 @@ class SARFIMA(_FractionalARIMA):
         super().__init__(d, order, seasonal_order, model_name="sarfima")
 
 
+class MeanVolatilityModel:
+    """ARIMA-family mean model with GARCH-family residual volatility."""
+
+    def __init__(
+        self,
+        mean_model: str = "arfima",
+        volatility_model: str = "aparch",
+        d: float = 0.4,
+        order: Tuple[int, int, int] = (1, 0, 1),
+        seasonal_order: Tuple[int, int, int, int] = (0, 0, 0, 0),
+        p: int = 1,
+        o: int = 1,
+        q: int = 1,
+        distribution: str = "t",
+    ):
+        if mean_model not in {"arima", "sarima", "arfima", "sarfima"}:
+            raise ValueError("Unsupported mean model")
+        if volatility_model not in {"garch", "aparch"}:
+            raise ValueError("Unsupported volatility model")
+        if volatility_model == "garch":
+            o = 0
+        if p < 1 or o < 0 or q < 1 or o > p:
+            raise ValueError("Invalid APARCH orders")
+        if mean_model in {"sarima", "sarfima"} and seasonal_order[3] < 2:
+            raise ValueError("Seasonal mean models require a seasonal period")
+        self.d = d
+        self.mean_model = mean_model
+        self.volatility_model = volatility_model
+        self.order = order
+        self.seasonal_order = seasonal_order
+        self.p, self.o, self.q = p, o, q
+        self.distribution = distribution
+        self._mean_fit = None
+        self._volatility_fit = None
+        self._returns: Optional[pd.Series] = None
+        self._last_close: Optional[float] = None
+
+    def fit(self, values: Sequence[float]) -> "MeanVolatilityModel":
+        from arch import arch_model
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        prices = _as_series(values)
+        if (prices <= 0).any():
+            raise ValueError("ARFIMA_APARCH requires strictly positive prices")
+        self._last_close = float(prices.iloc[-1])
+        self._returns = np.log(prices / prices.shift(1)).dropna().reset_index(drop=True)
+        mean_input = (
+            fractional_difference(self._returns, self.d)
+            if self.mean_model in {"arfima", "sarfima"}
+            else self._returns
+        )
+        self._mean_fit = SARIMAX(
+            mean_input,
+            order=self.order,
+            seasonal_order=self.seasonal_order,
+            trend="n",
+            enforce_stationarity=True,
+            enforce_invertibility=True,
+        ).fit(disp=False)
+        residuals = pd.Series(self._mean_fit.resid).dropna() * 100
+        self._volatility_fit = arch_model(
+            residuals,
+            mean="Zero",
+            vol=self.volatility_model.upper(),
+            p=self.p,
+            o=self.o,
+            q=self.q,
+            dist=self.distribution,
+        ).fit(disp="off")
+        return self
+
+    def forecast(self, horizon: int) -> ForecastResult:
+        if (
+            self._mean_fit is None
+            or self._volatility_fit is None
+            or self._returns is None
+            or self._last_close is None
+        ):
+            raise RuntimeError("Call fit before forecast")
+        mean_prediction = self._mean_fit.get_forecast(horizon)
+        mean_values = np.asarray(mean_prediction.predicted_mean)
+        if self.mean_model in {"arfima", "sarfima"}:
+            return_forecast = inverse_fractional_difference(
+                mean_values, self._returns, self.d
+            ).to_numpy()
+        else:
+            return_forecast = mean_values
+        volatility_forecast = self._volatility_fit.forecast(
+            horizon=horizon,
+            method="simulation" if horizon > 1 else "analytic",
+            simulations=1000,
+            reindex=False,
+        )
+        return_variance = np.asarray(volatility_forecast.variance.iloc[-1]) / 10000
+        mean = self._last_close * np.exp(np.cumsum(return_forecast))
+        variance = mean**2 * np.cumsum(return_variance)
+        return ForecastResult(
+            mean=pd.Series(mean, name="mean"),
+            variance=pd.Series(variance, name="variance"),
+            metadata={
+                "model": f"{self.mean_model}_{self.volatility_model}",
+                "mean_model": self.mean_model,
+                "fractional_d": self.d,
+                "arfima_order": self.order,
+                "seasonal_order": self.seasonal_order,
+                "volatility_model": self.volatility_model,
+                "aparch_order": (self.p, self.o, self.q),
+                "distribution": self.distribution,
+            },
+            current_value=self._last_close,
+        )
+
+
+class ARFIMA_APARCH(MeanVolatilityModel):
+    """Backward-compatible ARFIMA + APARCH composite."""
+
+    def __init__(self, **kwargs: Any):
+        super().__init__(mean_model="arfima", volatility_model="aparch", **kwargs)
+
+
 class VolatilityModel:
     """GARCH or APARCH return model with forecasts converted to Close prices."""
 

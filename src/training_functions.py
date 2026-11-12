@@ -139,7 +139,8 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
                   learning_scheduler: torch.optim.lr_scheduler = None,
                   min_delta: float = 0.0, patience: int = 0, monitor: str = 'val',
                   save_suffix: str = '', save_metrics: bool = False, 
-                  device: torch.device = torch.device('cpu')) -> LatentSVGP:
+                  device: torch.device = torch.device('cpu'),
+                  checkpoint_path=None) -> LatentSVGP:
     """This funtions trains an SVGP model 
 
     Args:
@@ -166,6 +167,10 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
         raise ValueError(f"monitor must be 'val' or 'train', got {monitor!r}")
     if monitor == "val" and val_data is None:
         raise ValueError("monitor='val' requires val_data to be provided")
+    if not len(train_data) or (val_data is not None and not len(val_data)):
+        raise ValueError("Training and validation datasets must not be empty")
+    if epochs < 1:
+        raise ValueError("epochs must be positive")
     train_loader = DataLoader(train_data, batch_size, shuffle = False)
     val_loader = DataLoader(val_data, batch_size, shuffle = False) if val_data is not None else None
     mll = VariationalELBO(
@@ -209,8 +214,8 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
             if natural_gradient_optimizer is not None:
                 natural_gradient_optimizer.step()
             optimizer.step()
-            batch_losses.append(loss.item())
-        train_loss = sum(batch_losses) / len(batch_losses)
+            batch_losses.append((loss.item(), len(y_batch)))
+        train_loss = sum(loss * count for loss, count in batch_losses) / len(train_data)
         logging.info(f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.6f}")
         train_losses.append(train_loss)
         if learning_scheduler is not None:
@@ -219,24 +224,32 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
         likelihood.eval()
         if val_loader is not None:
             with torch.no_grad():
-                val_loss = sum(-mll(model(x_batch.to(device)), y_batch.to(device)) for x_batch, y_batch in val_loader) / len(val_loader)
+                val_loss = sum(
+                    -mll(model(x_batch.to(device)), y_batch.to(device)) * len(y_batch)
+                    for x_batch, y_batch in val_loader
+                ) / len(val_data)
+                if not torch.isfinite(val_loss):
+                    raise FloatingPointError("Non-finite GP validation loss")
             val_losses.append(val_loss.item())
         
-        
-        mse_train_local, mae_train_local = compute_prediction_metrics(
-            torch.cat([y for _, y in train_loader]), 
-            torch.cat([model(x).mean for x, _ in train_loader])
-        )
+        def metrics_for_loader(loader):
+            with torch.no_grad():
+                pairs = [(y.to(device), model(x.to(device)).mean) for x, y in loader]
+                return compute_prediction_metrics(
+                    torch.cat([y for y, _ in pairs]),
+                    torch.cat([prediction for _, prediction in pairs]),
+                )
+
+        mse_train_local, mae_train_local = metrics_for_loader(train_loader)
         mse_losses.append(mse_train_local)
         mae_losses.append(mae_train_local)
         if val_loader is not None:
-            mse_val_local, mae_val_local = compute_prediction_metrics(
-                torch.cat([y for _, y in val_loader]), 
-                torch.cat([model(x).mean for x, _ in val_loader])
-            )
+            mse_val_local, mae_val_local = metrics_for_loader(val_loader)
             mse_losses_val.append(mse_val_local)
             mae_losses_val.append(mae_val_local)
             logging.info(f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.6f}, Val Loss: {val_loss.item():.6f}, MSE Train: {mse_train_local:.6f}, MAE Train: {mae_train_local:.6f}, MSE Val: {mse_val_local:.6f}, MAE Val: {mae_val_local:.6f}")
+        else:
+            logging.info(f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.6f}, MSE Train: {mse_train_local:.6f}, MAE Train: {mae_train_local:.6f}")
 
         current_metric = val_loss if monitor == "val" else train_loss
  
@@ -257,14 +270,19 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
             counter = 0
         else:
             counter += 1
+
+        logging.info(
+            f"Best epoch so far: {best_metrics['epoch'] + 1}, "
+            f"Best validation MSE: {best_metrics['mse_val']}, "
+            f"Best validation MAE: {best_metrics['mae_val']}"
+        )
         
-        with open(f"trained_model_{save_suffix}.pt", "wb") as f:
-            torch.save(best_state, f)
+        if checkpoint_path is not None and counter == 0:
+            torch.save(best_state, checkpoint_path)
         
-        if counter >= patience:
+        if patience > 0 and counter >= patience:
             logging.info(f"Early Stopping at Epoch {epoch} (monitor={monitor})")
             break
-        logging.info(f"Validation Loss: {val_loss.item()}")
 
     
     metrics = {
@@ -280,4 +298,3 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
     likelihood.load_state_dict(best_state["likelihood"])
 
     return (model, likelihood, metrics, best_metrics)
-

@@ -20,6 +20,19 @@ warnings.filterwarnings('ignore')
 
 logging.basicConfig(level=logging.INFO)
 
+def calendar_bounds(split):
+    """Return a half-open date interval; date-only end dates include the day."""
+    start = pd.Timestamp(split['start'])
+    end_value = split['end']
+    end = pd.Timestamp(end_value)
+    if isinstance(end_value, str) and len(end_value) == 10:
+        end += pd.Timedelta(days=1)
+    else:
+        end += pd.Timedelta(nanoseconds=1)
+    if end <= start:
+        raise ValueError(f"Invalid date range: {split}")
+    return start, end
+
 
 class DataPreprocessor:
     """
@@ -293,7 +306,8 @@ class DataPreprocessor:
         sequence_length: int = 30,
         target_col: str = 'Volatility_20d',
         prediction_horizon: int = 1,
-        input_study_features = None
+        input_study_features = None,
+        expected_interval: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Create LSTM sequences for a single symbol.
@@ -323,6 +337,13 @@ class DataPreprocessor:
             X_data = symbol_data[input_study_features].values
         y_data = symbol_data[target_col].values
         date_data = symbol_data['Date'].values
+        if pd.Index(date_data).has_duplicates:
+            raise ValueError(f"Duplicate timestamps for symbol {symbol}")
+        if sequence_length < 1 or prediction_horizon < 1:
+            raise ValueError("sequence_length and prediction_horizon must be positive")
+        expected_delta = pd.Timedelta(expected_interval) if expected_interval else None
+        if expected_delta is not None and expected_delta <= pd.Timedelta(0):
+            raise ValueError("expected_interval must be positive")
         
         sequences = []
         targets = []
@@ -332,6 +353,10 @@ class DataPreprocessor:
             seq = X_data[i:i + sequence_length]
             target_idx = i + sequence_length + prediction_horizon - 1
             target = y_data[target_idx]
+            if expected_delta is not None:
+                date_diffs = np.diff(date_data[i:target_idx + 1])
+                if not np.all(date_diffs == expected_delta.to_timedelta64()):
+                    continue
             
             if not (np.isnan(seq).any() or np.isnan(target)):
                 sequences.append(seq)
@@ -343,22 +368,39 @@ class DataPreprocessor:
         return np.array(sequences), np.array(targets), np.array(target_dates)
         
     
-    def scale_features(self, df: pd.DataFrame, scaler: str):
+    def scale_features(self, df: pd.DataFrame, scaler: str, fit_data: pd.DataFrame = None):
 
         numeric_features = df.select_dtypes(include=[np.number]).columns.tolist()
+        if not numeric_features:
+            raise ValueError("No numeric features to scale")
+        fit_data = df if fit_data is None else fit_data
+        if fit_data.empty:
+            raise ValueError("No training rows available to fit the scaler")
 
         if scaler == 'minmax':
             self.scaler_used = MinMaxScaler().set_output(transform='pandas')
-            returned_df = self.scaler_used.fit_transform(df[numeric_features])
         elif scaler == 'standardization':
             self.scaler_used = StandardScaler().set_output(transform='pandas')
-            returned_df = self.scaler_used.fit_transform(df[numeric_features])
         elif scaler == 'robust':
             self.scaler_used = RobustScaler().set_output(transform='pandas')
-            returned_df = self.scaler_used.fit_transform(df[numeric_features])
         else:
             raise ValueError(f"Unknown scaler type: {scaler}. Choose from 'minmax', 'standardization', or 'robust'.")
-        return returned_df
+        self.scaler_used.fit(fit_data[numeric_features])
+        return self.scaler_used.transform(df[numeric_features])
+
+    def scale_for_date_splits(self, data: pd.DataFrame, features: List[str],
+                              target_col: str, train_split: Dict[str, str],
+                              scaler: str = 'minmax') -> pd.DataFrame:
+        """Fit on training rows only, retaining the target independently of inputs."""
+        columns = list(dict.fromkeys([*features, target_col]))
+        missing = [col for col in columns if col not in data.columns]
+        if missing:
+            raise ValueError(f"Missing feature or target columns: {missing}")
+        frame = data.set_index(['Date', 'Symbol'])[columns].dropna()
+        dates = pd.to_datetime(frame.index.get_level_values('Date'))
+        start, end = calendar_bounds(train_split)
+        mask = (dates >= start) & (dates < end)
+        return self.scale_features(frame, scaler, fit_data=frame.loc[mask])
 
     def prepare_lstm_data(
         self,
@@ -371,7 +413,8 @@ class DataPreprocessor:
         test_size: float = 0.2,
         validation_size: float = 0.1,
         warn_if_unscaled: bool = True,
-        input_study_features: Optional[List[str]] = None
+        input_study_features: Optional[List[str]] = None,
+        expected_interval: Optional[str] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Transform processed tabular data into LSTM matrix structure.
@@ -434,7 +477,7 @@ class DataPreprocessor:
  
         # Build RAW (unscaled) sequences per symbol, keeping the target date
         # of each sequence so we can split on calendar boundaries later.
-        X_parts, y_parts, date_parts = [], [], []
+        X_parts, y_parts, date_parts, symbol_parts = [], [], [], []
         used_symbols = []
  
         for symbol in symbols:
@@ -444,13 +487,15 @@ class DataPreprocessor:
                 sequence_length=sequence_length,
                 target_col=target_col,
                 prediction_horizon=prediction_horizon,
-                input_study_features=selected_features
+                input_study_features=selected_features,
+                expected_interval=expected_interval,
             )
  
             if len(X_symbol) > 0:
                 X_parts.append(X_symbol)
                 y_parts.append(y_symbol)
                 date_parts.append(dates_symbol)
+                symbol_parts.append(np.full(len(dates_symbol), symbol))
                 used_symbols.append(symbol)
  
         if not X_parts:
@@ -462,28 +507,31 @@ class DataPreprocessor:
         X = np.concatenate(X_parts, axis=0)
         y = np.concatenate(y_parts, axis=0)
         dates = np.concatenate(date_parts, axis=0)
+        sequence_symbols = np.concatenate(symbol_parts, axis=0)
  
         # Sort everything chronologically by target date (symbols get
         # interleaved together, which is fine/expected for LSTM training).
         order = np.argsort(dates)
-        X, y, dates = X[order], y[order], dates[order]
+        X, y, dates, sequence_symbols = X[order], y[order], dates[order], sequence_symbols[order]
  
         if date_splits is not None:
-            train_start = pd.Timestamp(date_splits['train']['start'])
-            train_end = pd.Timestamp(date_splits['train']['end'])
-            val_start = pd.Timestamp(date_splits['validation']['start'])
-            val_end = pd.Timestamp(date_splits['validation']['end'])
-            test_start = pd.Timestamp(date_splits['test']['start'])
-            test_end = pd.Timestamp(date_splits['test']['end'])
+            train_start, train_end = calendar_bounds(date_splits['train'])
+            val_start, val_end = calendar_bounds(date_splits['validation'])
+            test_start, test_end = calendar_bounds(date_splits['test'])
+            if train_end > val_start or val_end > test_start:
+                raise ValueError("Date splits must be chronological and non-overlapping")
  
             dates_ts = pd.to_datetime(dates)
-            train_mask = (dates_ts >= train_start) & (dates_ts <= train_end)
-            val_mask = (dates_ts >= val_start) & (dates_ts <= val_end)
-            test_mask = (dates_ts >= test_start) & (dates_ts <= test_end)
+            train_mask = (dates_ts >= train_start) & (dates_ts < train_end)
+            val_mask = (dates_ts >= val_start) & (dates_ts < val_end)
+            test_mask = (dates_ts >= test_start) & (dates_ts < test_end)
  
             X_train, y_train, dates_train = X[train_mask], y[train_mask], dates[train_mask]
             X_val, y_val, dates_val = X[val_mask], y[val_mask], dates[val_mask]
             X_test, y_test, dates_test = X[test_mask], y[test_mask], dates[test_mask]
+            symbols_train, symbols_val, symbols_test = (
+                sequence_symbols[train_mask], sequence_symbols[val_mask], sequence_symbols[test_mask]
+            )
  
             if len(X_train) == 0:
                 raise ValueError(
@@ -506,6 +554,9 @@ class DataPreprocessor:
             X_train, y_train, dates_train = X[:n_train], y[:n_train], dates[:n_train]
             X_val, y_val, dates_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val], dates[n_train:n_train + n_val]
             X_test, y_test, dates_test = X[n_train + n_val:], y[n_train + n_val:], dates[n_train + n_val:]
+            symbols_train = sequence_symbols[:n_train]
+            symbols_val = sequence_symbols[n_train:n_train + n_val]
+            symbols_test = sequence_symbols[n_train + n_val:]
  
         # This function no longer scales features itself - it only warns if
         # your data looks unscaled, so you can catch it before training.
@@ -556,6 +607,9 @@ class DataPreprocessor:
             'X_test': X_test,
             'y_test': y_test,
             'dates_test': dates_test,
+            'symbols_train': symbols_train,
+            'symbols_val': symbols_val,
+            'symbols_test': symbols_test,
             'feature_columns': selected_features,
             'target_col': target_col,
             'sequence_length': sequence_length,

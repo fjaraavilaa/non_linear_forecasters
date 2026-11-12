@@ -12,12 +12,42 @@ The idea is to also implement other non-linear forecasters and be capable of com
 
 - An LSTM + Gaussian-process model, implemented with PyTorch and GPyTorch.
 - LSTM-only training and prediction scripts.
+- Classical forecasting models with a shared interface: ARIMA, SARIMA, ARFIMA,
+  SARFIMA, GARCH, APARCH, moving averages, and exponential smoothing.
 - Optuna studies for the LSTM/GP, LSTM-only, price, and TimeFM experiments.
+- A causal tabular XGBoost workflow with lag, trailing-window, and calendar features.
 - Binance and Yahoo Finance data collectors.
 - Preprocessing for OHLCV data, returns, scaling, and fixed-length sequences.
 - Notebooks and tests used while developing the models.
 
 The Gaussian-process model is sparse and variational, so it can work with learned LSTM features without requiring an exact GP over the full training set. Its outputs include a predictive distribution, rather than only a point estimate.
+
+## Classical forecasting models
+
+The classical models are available from `src.classical_models`. Each model supports `fit(values).forecast(horizon)` and returns a
+`ForecastResult` with `mean`, `variance`, and model metadata. The result also
+supports `decision_signals()`, which provides standardized expected movement,
+uncertainty, direction, and signal strength for a separate decision-making
+agent:
+
+```python
+from src.classical_models import ARIMA, GARCH
+
+arima_forecast = ARIMA(order=(1, 1, 1)).fit(close_values).forecast(24)
+garch_forecast = GARCH(p=1, q=1).fit(close_values).forecast(24)
+signals = garch_forecast.decision_signals()
+```
+
+The models do not emit buy/sell actions or position sizes. A downstream agent
+must apply its own risk policy, transaction costs, exposure limits, and
+abstention rules. Every signal frame is marked `policy="signals_only"` so it
+cannot be confused with an executed decision.
+
+ARFIMA and SARFIMA apply fractional differencing before fitting the ARMA
+component and reconstruct forecasts on the Close-price scale. GARCH and APARCH
+fit log returns and convert their forecasts back to Close prices. These models
+are model modules currently; a unified multi-model benchmark runner is not yet
+part of the command-line workflow.
 
 ## Repository layout
 
@@ -59,7 +89,7 @@ PyTorch uses the CPU by default unless a compatible CUDA build is installed. If 
 `main.py` reads the date split from `validation/healthy_dates.json`, downloads data from Binance, prepares sequences, and trains the deep-kernel GP using the checked-in best-parameter files. You can play around with it
 
 ```bash
-python main.py --symbols BTC-USD --device cpu
+python main.py --symbols BTC-USD --device cpu --artifacts_dir artifacts/run-1
 ```
 
 The input features default to `Log_Returns`. You can supply a different set when the corresponding columns are available:
@@ -68,12 +98,86 @@ The input features default to `Log_Returns`. You can supply a different set when
 python main.py \
   --symbols BTC-USD \
   --input_study_features Log_Returns Volume Count \
-  --device cpu
+  --device cpu --artifacts_dir artifacts/run-2
 ```
 
 The scripts were written for specific studies and some settings, such as the Binance interval and model parameters, remain in the source. Treat the command-line arguments as overrides, not as a complete configuration system.
 
-This is mainly for test purposes.
+The output directory must be new or empty; existing experiments are never
+overwritten. For a repeatable comparison, supply a frozen input snapshot with
+`--raw_data artifacts/raw_data.parquet`. The target remains `Close` even when
+it is not among the input features. The scaler is fitted on training dates only,
+and date-only split ends include the entire final day. Validation-based early
+stopping is the default. `--no-work_with_validation_set` explicitly selects
+legacy train-plus-validation training and training-loss monitoring.
+Hourly windows crossing missing bars are discarded rather than treating a gap
+as one hour. Sequence artifacts and prediction frames include symbol identifiers.
+
+Use `--target-mode delta` with `Close` as an input to model the change from the
+last observed Close. Predictions are reconstructed as Close prices. This is
+an experimental option, not a guarantee of higher accuracy. Use `--config`,
+`--dates-config`, `--seed`, `--epochs` and `--patience` to reproduce runs.
+`--validation-only` suppresses test predictions during model selection.
+
+Each run saves its scaler, sequence data, metadata, model checkpoint, and
+prediction files in the chosen directory. `predictions_*_set.parquet` retains
+the scaled output format; `predictions_*_native.parquet` contains Close-price
+means and actuals, and variance in squared price units. Variance is that of the
+Gaussian predictive distribution, including observation noise; interval
+widths use its square root. Load a matching checkpoint with `--model_location`
+and the same configuration, input features, pretrained mean and training data.
+The scaler and model settings are checked on reload. Older checkpoints lacking
+these settings cannot be loaded by this workflow; retain the original workflow
+when reproducing such experiments. The stored sequence targets remain scaled
+Close levels even when delta training is selected.
+
+Compare native predictions only on aligned timestamps, and choose models using
+validation data before evaluating a held-out test:
+
+```bash
+python -m src.compare_forecasts \
+  artifacts/baseline/predictions_test_native.parquet \
+  artifacts/candidate/predictions_test_native.parquet
+```
+
+The comparison reports MAE, RMSE, Gaussian negative log likelihood, 80% and 95%
+coverage and interval width, and unmatched timestamp counts. It requires unique
+timestamps and matching actual values, so compare one symbol at a time.
+
+If predictive variance is miscalibrated, an optional scalar Gaussian variance
+calibration can be fitted on an initial, chronological portion of validation
+predictions. Reserve the later validation period to choose whether to use it;
+never fit it on the test set. For example:
+
+```bash
+python -m src.calibrate_forecast fit artifacts/run-1/predictions_validation_native.parquet \
+  --end '2025-05-01 00:00:00' --output artifacts/run-1/calibration.json
+python -m src.calibrate_forecast apply artifacts/run-1/predictions_validation_native.parquet \
+  --calibration artifacts/run-1/calibration.json --after '2025-05-01 00:00:00' \
+  --output artifacts/run-1/validation_calibrated.parquet
+python -m src.calibrate_forecast apply artifacts/run-1/predictions_test_native.parquet \
+  --calibration artifacts/run-1/calibration.json \
+  --output artifacts/run-1/test_calibrated.parquet
+```
+
+The calibration file records its fitting range and multiplier. Applying it
+requires every evaluated target timestamp to be later than that range. It is
+an empirical adjustment, not a guarantee of future coverage.
+
+## Running the XGBoost time-series baseline
+
+XGBoost is trained on one row per forecast origin.  Features are constructed
+per symbol and all generated lags and rolling statistics use only history;
+the configured calendar split is applied to the target (forecast) date.
+
+```bash
+python -m src.train_xgboost --symbols BTC-USD --interval 1h --target Close \
+  --features Log_Returns Volume Count --horizon 1
+```
+
+To train on a fractionally differenced price target, add `--fractional-d 0.4`.
+That output is in the fractional-difference domain; reconstruct it to price
+space before treating it as a Close-price forecast.
 
 ## Hyperparameter searches
 
@@ -100,6 +204,30 @@ python -m src.optuna_trial_timefm_function \
   --interval 1h \
   --covariates Volume Count
 ```
+
+### Classical-model searches
+
+Classical models use expanding-window validation rather than shuffled splits.
+Candidates are pruned if their required transformed series fails the ADF
+stationarity check, their fitted residuals retain serial correlation
+(Ljung-Box), or, for GARCH/APARCH, their standardized residuals retain ARCH
+effects. Thus the selected configuration passes the core statistical checks in
+every training fold.
+
+```bash
+python -m src.classical_model_search prices.csv \
+  --column Close --model sarima --seasonal-period 24 \
+  --horizon 24 --folds 4 --trials 100 \
+  --storage sqlite:///classical_sarima.db --study-name btc_hourly_sarima
+```
+
+Use a seasonal period consistent with the data frequency (for example, 24 for
+hourly data with a daily cycle). ARIMA-family models search AR/MA orders 0–3
+and integer differencing 0–2; SARIMA/SARFIMA additionally search seasonal
+orders; ARFIMA/SARFIMA search fractional differencing from 0.05 to 0.95; and
+GARCH/APARCH search orders 1–3 plus normal, Student-t, and GED innovations.
+The compact ranges are intended for a defensible initial search, and can be
+widened for a well-understood dataset.
 
 Running several trial processes against the same SQLite study is possible, but it is worth checking the database and hardware setup first. The experiments can download a substantial amount of intraday data and, in the LSTM/GP case, benefit from a GPU.
 

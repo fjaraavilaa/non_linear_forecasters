@@ -223,17 +223,19 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
             val_losses.append(val_loss.item())
         
         
-        mse_train_local, mae_train_local = compute_prediction_metrics(
-            torch.cat([y for _, y in train_loader]), 
-            torch.cat([model(x).mean for x, _ in train_loader])
-        )
+        with torch.no_grad():
+            mse_train_local, mae_train_local = compute_prediction_metrics(
+                torch.cat([y for _, y in train_loader]),
+                torch.cat([model(x.to(device)).mean.cpu() for x, _ in train_loader])
+            )
         mse_losses.append(mse_train_local)
         mae_losses.append(mae_train_local)
         if val_loader is not None:
-            mse_val_local, mae_val_local = compute_prediction_metrics(
-                torch.cat([y for _, y in val_loader]), 
-                torch.cat([model(x).mean for x, _ in val_loader])
-            )
+            with torch.no_grad():
+                mse_val_local, mae_val_local = compute_prediction_metrics(
+                    torch.cat([y for _, y in val_loader]),
+                    torch.cat([model(x.to(device)).mean.cpu() for x, _ in val_loader])
+                )
             mse_losses_val.append(mse_val_local)
             mae_losses_val.append(mae_val_local)
             logging.info(f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.6f}, Val Loss: {val_loss.item():.6f}, MSE Train: {mse_train_local:.6f}, MAE Train: {mae_train_local:.6f}, MSE Val: {mse_val_local:.6f}, MAE Val: {mae_val_local:.6f}")
@@ -264,7 +266,8 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
         if counter >= patience:
             logging.info(f"Early Stopping at Epoch {epoch} (monitor={monitor})")
             break
-        logging.info(f"Validation Loss: {val_loss.item()}")
+        if val_loader is not None:
+            logging.info(f"Validation Loss: {val_loss.item()}")
 
     
     metrics = {
@@ -280,4 +283,3 @@ def train_with_gp(model: DeepKernelSVGP, train_data: TensorDataset,
     likelihood.load_state_dict(best_state["likelihood"])
 
     return (model, likelihood, metrics, best_metrics)
-

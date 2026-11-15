@@ -56,10 +56,10 @@ PyTorch uses the CPU by default unless a compatible CUDA build is installed. If 
 
 ## Running the LSTM + GP experiment
 
-`main.py` reads the date split from `validation/healthy_dates.json`, downloads data from Binance, prepares sequences, and trains the deep-kernel GP using the checked-in best-parameter files. You can play around with it
+`main.py` reads the date split from `validation/healthy_dates.json`, downloads hourly data from Binance, prepares one-hour-ahead Close sequences, and trains the deep-kernel GP. It requires the existing local `best_trial_params_1h.json` file; this file is not tracked by Git. Choose an empty output directory so existing artifacts are not overwritten.
 
 ```bash
-python main.py --symbols BTC-USD --device cpu
+python main.py --symbols BTC-USD --device cpu --artifacts_dir artifacts/hourly-run
 ```
 
 The input features default to `Log_Returns`. You can supply a different set when the corresponding columns are available:
@@ -68,10 +68,15 @@ The input features default to `Log_Returns`. You can supply a different set when
 python main.py \
   --symbols BTC-USD \
   --input_study_features Log_Returns Volume Count \
+  --artifacts_dir artifacts/hourly-features \
   --device cpu
 ```
 
 The scripts were written for specific studies and some settings, such as the Binance interval and model parameters, remain in the source. Treat the command-line arguments as overrides, not as a complete configuration system.
+
+The restored hourly scripts fit their scaler before the date split, so validation
+and test statistics can affect scaling. Their reported scores should not be used
+as leakage-free comparisons until that behavior is changed.
 
 This is mainly for test purposes.
 
@@ -83,6 +88,10 @@ The Optuna scripts keep their studies in local SQLite files. Start the relevant 
 # LSTM + GP
 python -m src.study_start
 python -m src.optuna_trial_function --symbols BTC-USD --device cpu
+
+# Hourly LSTM + GP Close-price search
+python -m src.study_start_price_hourly
+python -m src.optuna_trial_function_price_hourly --symbols BTC-USD --device cpu
 
 # LSTM only
 python -m src.optuna_trial_lstm_function --symbols BTC-USD --device cpu

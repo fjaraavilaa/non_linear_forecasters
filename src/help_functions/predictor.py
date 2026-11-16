@@ -6,7 +6,8 @@ import torch
 import plotly
 import numpy as np
 
-def predict_with_trained_model(model: Module, likelihood: Likelihood, X_test: torch.Tensor):
+def predict_with_trained_model(model: Module, likelihood: Likelihood, X_test: torch.Tensor,
+                               batch_size: int = 256):
     """
     Predicts the output using the trained model and likelihood.
 
@@ -22,7 +23,7 @@ def predict_with_trained_model(model: Module, likelihood: Likelihood, X_test: to
     with torch.no_grad():
         mean = []
         variance = []
-        for batch in torch.utils.data.DataLoader(X_test):
+        for batch in torch.utils.data.DataLoader(X_test, batch_size=batch_size):
             # Get the predictive distribution
             predictive_dist = likelihood(model(batch.to(device)))
 
@@ -79,6 +80,36 @@ def create_df_from_predictions(mean, variance, indexing, actual=None):
         predictions_df['actual'] = np.asarray(actual).reshape(-1)
 
     return predictions_df
+
+
+def hourly_price_predictions(predictions, inputs, features, scaler, target):
+    """Convert scaled one-hour GP predictions to prices and 95% intervals."""
+    columns = list(scaler.feature_names_in_)
+    target_index = columns.index(target)
+    scale = scaler.scale_[target_index]
+    mean = (predictions['mean'].to_numpy() - scaler.min_[target_index]) / scale
+    actual = (predictions['actual'].to_numpy() - scaler.min_[target_index]) / scale
+    std = np.sqrt(predictions['variance'].to_numpy()) / abs(scale)
+    if not np.isfinite(np.column_stack([mean, actual, std])).all():
+        raise ValueError("Non-finite GP predictions or variance")
+    lower, upper = mean - 1.959963984540054 * std, mean + 1.959963984540054 * std
+    result = pd.DataFrame(index=predictions.index)
+    if 'Close' in features:
+        close_index = columns.index('Close')
+        last_close = (inputs[:, -1, features.index('Close')] - scaler.min_[close_index]) / scaler.scale_[close_index]
+        if not np.isfinite(last_close).all() or (last_close <= 0).any():
+            raise ValueError("Previous close must be finite and positive")
+        result['baseline'] = last_close
+    elif target == 'Log_Returns':
+        raise ValueError("Log-return forecasts require Close as an input feature")
+    if target == 'Log_Returns':
+        mean, actual = last_close * np.exp(mean), last_close * np.exp(actual)
+        lower, upper = last_close * np.exp(lower), last_close * np.exp(upper)
+    result['mean'], result['actual'] = mean, actual
+    result['lower_95'], result['upper_95'] = lower, upper
+    if not np.isfinite(result.to_numpy()).all():
+        raise ValueError("Non-finite price predictions or intervals")
+    return result
 
 def plot_predictions(predictions_df, title="Predictions", confidence=0.95):
     """

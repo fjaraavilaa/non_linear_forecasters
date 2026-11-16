@@ -36,6 +36,16 @@ parser.add_argument('--device' , type=str, default='cuda',
                     help='Device to use for training (e.g., "cuda" or "cpu")')
 parser.add_argument('--pretrained_mean_function', type=str, default=None,
                     help='Path to a pretrained mean function model (optional)')
+parser.add_argument('--paired_search', action='store_true',
+                    help='Run the paired hourly feature and scheduler comparison')
+parser.add_argument('--target', choices=['Log_Returns'], default='Log_Returns')
+parser.add_argument('--raw_data', type=Path)
+parser.add_argument('--trials', type=int, default=20)
+parser.add_argument('--epochs', type=int, default=500)
+parser.add_argument('--storage', default='sqlite:///mydb_lstm_crypto_raw_GP_1h_w_lag.db')
+parser.add_argument('--study_name')
+parser.add_argument('--output_dir', type=Path, default=Path('hourly_search'))
+parser.add_argument('--seed', type=int, default=42)
 
 DATES_START_STUDY = config_dates['train']['start']
 DATES_END_STUDY = config_dates['test']['end']
@@ -195,6 +205,13 @@ def objective(trial):
 storage_name = "sqlite:///mydb_lstm_crypto_raw_GP_1h_w_lag.db"
 
 if __name__ == "__main__":
+    args = parser.parse_args()
+    if args.paired_search:
+        if args.trials < 1 or args.epochs < 1:
+            parser.error('--trials and --epochs must be positive')
+        from src.hourly_paired_search import run_paired_search
+        run_paired_search(args, config_dates)
+        raise SystemExit(0)
     study = optuna.load_study(
         study_name="lstm_cryptoraw_study_PeriodicMaternKernel", storage=storage_name
     )

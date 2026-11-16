@@ -93,6 +93,12 @@ python -m src.optuna_trial_function --symbols BTC-USD --device cpu
 python -m src.study_start_price_hourly
 python -m src.optuna_trial_function_price_hourly --symbols BTC-USD --device cpu
 
+# Paired hourly log-return search
+python -m src.optuna_trial_function_price_hourly --paired_search \
+  --target Log_Returns --symbols BTC-USD --raw_data artifacts/raw_data.parquet \
+  --study_name btc_paired_long --storage sqlite:///artifacts/btc_paired_long.db \
+  --output_dir artifacts/btc_paired_long --trials 20 --epochs 500 --device cpu
+
 # LSTM only
 python -m src.optuna_trial_lstm_function --symbols BTC-USD --device cpu
 
@@ -100,6 +106,14 @@ python -m src.optuna_trial_lstm_function --symbols BTC-USD --device cpu
 python -m src.study_start_timefm
 python -m src.optuna_trial_timefm_function --symbols BTC-USD --interval 1h
 ```
+
+The paired hourly search compares constant Adam learning rates with cosine
+decay to a 10% floor, using an inner chronological validation slice. It selects
+the stopping epoch on that slice, refits on the full training period, and
+compares features with persistence on the original validation dates. The
+held-out test period is not used. Raw price MAE and uncertainty metrics are
+recorded alongside each trial. The best validation result is selection-biased.
+Use a new study and output directory for each run.
 
 The TimeFM search can optionally receive historical columns as covariates:
 

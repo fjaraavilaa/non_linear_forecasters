@@ -48,30 +48,64 @@ def acf_at_lag(x, s):
     return acf(x - trend, nlags=s, fft=True)[s]
  
  
+def fast_scores(x, s):
+    """O(n) seasonal strength and ACF at lag s, no STL.
+    Detrend with a centred moving average of width s (removes trend and any cycle
+    that divides s), estimate the seasonal profile by averaging over phases."""
+    x = np.asarray(x, float)
+    trend = pd.Series(x).rolling(s, center=True, min_periods=s // 2).mean().to_numpy()
+    d = x - trend
+    ok = ~np.isnan(d)
+    d = d[ok]
+    phase = (np.arange(len(x))[ok]) % s
+    profile = np.bincount(phase, weights=d, minlength=s) / np.maximum(np.bincount(phase, minlength=s), 1)
+    seas = profile[phase]
+    resid = d - seas
+    strength = max(0.0, 1 - np.var(resid) / np.var(seas + resid))
+    a = acf(d, nlags=s, fft=True)[s]
+    return strength, a
+
+
 def find_seasonal_period(x, extra_candidates=(), n_peaks=8, top_k=3,
-                         score_fn=None, verbose=True):
-    """Return (best_s, table). score_fn(x, s) -> float (lower is better), e.g. CV error."""
+                         score_fn=None, verbose=True, max_period=None, fast=True,
+                         min_strength=0.4, min_acf=0.2):
+    """Return (best_s, table); best_s is None if no candidate is seasonal enough.
+    A candidate qualifies if strength >= min_strength AND acf_s >= min_acf.
+    score_fn(x, s) -> float (lower is better), e.g. CV error."""
     cands = sorted(set(candidate_periods(x, n_peaks)) | set(extra_candidates))
+    if max_period is not None:
+        cands = [s for s in cands if s <= max_period]
     rows = []
     for s in cands:
         if len(x) < 2 * s + 1:          # STL needs at least two full cycles
             continue
-        rows.append({"s": s,
-                     "strength": seasonal_strength(x, s),
-                     "acf_s": acf_at_lag(x, s)})
+        if fast:
+            st, a = fast_scores(x, s)
+        else:
+            st, a = seasonal_strength(x, s), acf_at_lag(x, s)
+        rows.append({"s": s, "strength": st, "acf_s": a})
     table = pd.DataFrame(rows).sort_values("strength", ascending=False).reset_index(drop=True)
- 
-    if score_fn is not None:
-        shortlist = table.head(top_k)["s"]
+
+    table["seasonal"] = (table["strength"] >= min_strength) & (table["acf_s"] >= min_acf)
+    qualified = table[table["seasonal"]]
+
+    if qualified.empty:
+        best = None
+    elif score_fn is not None:
+        shortlist = qualified.head(top_k)["s"]
         scores = {int(s): score_fn(x, int(s)) for s in shortlist}
         table["cv_score"] = table["s"].map(scores)
         best = min(scores, key=scores.get)
     else:
-        best = int(table.loc[0, "s"])
- 
+        best = int(qualified.iloc[0]["s"])
+
     if verbose:
         print(table.to_string(index=False))
-        print(f"\nSelected s = {best}")
+        if best is None:
+            print(f"\nNo seasonal period found (need strength >= {min_strength} "
+                  f"and acf_s >= {min_acf}). Consider a non-seasonal ARFIMA.")
+        else:
+            print(f"\nSelected s = {best}")
     return best, table
  
  

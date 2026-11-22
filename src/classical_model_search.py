@@ -201,9 +201,9 @@ def suggest_parameters(
 
     if model_name in {"arima", "sarima"}:
         order = (
-            trial.suggest_int("p", 0, 3),
+            trial.suggest_int("p", 0, 10),
             trial.suggest_int("d", 0, 2),
-            trial.suggest_int("q", 0, 3),
+            trial.suggest_int("q", 0, 10),
         )
         if model_name == "arima":
             return {"order": order}
@@ -223,13 +223,13 @@ def suggest_parameters(
             "d": trial.suggest_float("fractional_d", 0.05, 0.95, step=0.05),
             # Fractional differencing already handles integration; do not
             # introduce a second integer differencing operation.
-            "order": (trial.suggest_int("p", 0, 3), 0, trial.suggest_int("q", 0, 3)),
+            "order": (trial.suggest_int("p", 0, 10), 0, trial.suggest_int("q", 0, 10)),
         }
         if model_name == "sarfima":
             if seasonal_period < 2:
                 raise ValueError("SARFIMA search requires a seasonal_period of at least 2")
             params["seasonal_order"] = (
-                trial.suggest_int("P", 0, 2), 0, trial.suggest_int("Q", 0, 2), seasonal_period
+                trial.suggest_int("P", 0, 10), 0, trial.suggest_int("Q", 0, 10), seasonal_period
             )
         return params
     if model_name == "garch":
@@ -245,9 +245,9 @@ def suggest_parameters(
             p = trial.suggest_int("vol_p", 1, 3)
             mean_params = {
                 "order": (
-                    trial.suggest_int("mean_p", 0, 3),
+                    trial.suggest_int("mean_p", 0, 10),
                     0,
-                    trial.suggest_int("mean_q", 0, 3),
+                    trial.suggest_int("mean_q", 0, 10),
                 ),
             }
             if mean_model in {"arfima", "sarfima"}:
@@ -256,9 +256,9 @@ def suggest_parameters(
                 if seasonal_period < 2:
                     raise ValueError("Seasonal composite search requires a seasonal_period of at least 2")
                 mean_params["seasonal_order"] = (
-                    trial.suggest_int("mean_P", 0, 2),
+                    trial.suggest_int("mean_P", 0, 10),
                     0,
-                    trial.suggest_int("mean_Q", 0, 2),
+                    trial.suggest_int("mean_Q", 0, 10),
                     seasonal_period,
                 )
             if volatility_model == "garch":

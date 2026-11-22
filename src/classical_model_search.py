@@ -32,6 +32,8 @@ from src.classical_models import (
     fractional_difference,
 )
 
+from src.help_functions.seasonal_period_searchers import find_seasonal_period
+
 
 @dataclass(frozen=True)
 class AssumptionReport:
@@ -149,6 +151,8 @@ def check_assumptions(model: Any, values: Sequence[float], alpha: float = 0.05) 
 
 def build_model(model_name: str, params: Dict[str, Any]) -> Any:
     """Instantiate one supported classical model from Optuna parameters."""
+    params = dict(params)
+    params.pop("seasonal_period", None)
     factories: Dict[str, Callable[..., Any]] = {
         "moving_average": MovingAverage,
         "exponential_smoothing": ExponentialSmoothingModel,
@@ -173,13 +177,24 @@ def build_model(model_name: str, params: Dict[str, Any]) -> Any:
         raise ValueError(f"Unknown classical model: {model_name}") from error
 
 
-def suggest_parameters(trial: Any, model_name: str, seasonal_period: int = 0) -> Dict[str, Any]:
+def suggest_parameters(
+    trial: Any,
+    model_name: str,
+    possible_seasonal_periods: Sequence[int] = (),
+) -> Dict[str, Any]:
     """Define deliberately compact, statistically valid search spaces."""
+    seasonal_period = (
+        trial.suggest_categorical("seasonal_period", possible_seasonal_periods)
+        if possible_seasonal_periods
+        else 0
+    )
     if model_name == "moving_average":
         return {"window": trial.suggest_int("window", 2, 60)}
     if model_name == "exponential_smoothing":
         trend = trial.suggest_categorical("trend", [None, "add"])
-        seasonal = trial.suggest_categorical("seasonal", [None, "add"])
+        seasonal = trial.suggest_categorical(
+            "seasonal", [None, "add"] if seasonal_period else [None]
+        )
         if seasonal and seasonal_period < 2:
             raise ValueError("seasonal_period must be at least 2 for seasonal smoothing")
         return {"trend": trend, "seasonal": seasonal, "seasonal_periods": seasonal_period if seasonal else None}
@@ -320,6 +335,7 @@ def search_classical_model(
     folds: int = 3,
     trials: int = 50,
     seasonal_period: int = 0,
+    seasonal_periods: Sequence[int] = (),
     storage: Optional[str] = None,
     study_name: Optional[str] = None,
     origins: Optional[Sequence[int]] = None,
@@ -343,8 +359,28 @@ def search_classical_model(
     ):
         raise ValueError("Validation origins must leave enough training and test data")
 
+    possible_seasonal_periods: list[int] = []
+    if (
+        model_name == "exponential_smoothing"
+        or "sarima" in model_name
+        or "sarfima" in model_name
+    ):
+        requested_periods = list(seasonal_periods)
+        if seasonal_period:
+            requested_periods.append(seasonal_period)
+        if any(period < 2 for period in requested_periods):
+            raise ValueError("Seasonal periods must be at least 2")
+
+        _, table = find_seasonal_period(series, verbose=False)
+        detected_periods = table.loc[table["seasonal"], "s"].to_list()
+        possible_seasonal_periods = sorted(
+            set(map(int, [*detected_periods, *requested_periods]))
+        )
+        if not possible_seasonal_periods and model_name != "exponential_smoothing":
+            raise ValueError("No valid seasonal period was found")
+
     def objective(trial: Any) -> float:
-        params = suggest_parameters(trial, model_name, seasonal_period)
+        params = suggest_parameters(trial, model_name, possible_seasonal_periods)
         # Optuna requires a fixed distribution for each parameter name.  Keep
         # the o range fixed, then prune combinations invalid for APARCH.
         if model_name == "aparch" and params["o"] > params["p"]:
@@ -410,7 +446,13 @@ def _main() -> None:
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--trials", type=int, default=50)
-    parser.add_argument("--seasonal-period", type=int, default=0)
+    parser.add_argument(
+        "--seasonal-period",
+        type=int,
+        nargs="+",
+        default=[],
+        help="Additional seasonal periods to include in the search",
+    )
     parser.add_argument("--storage", help="Optuna storage URL, e.g. sqlite:///classical.db")
     parser.add_argument("--study-name")
     args = parser.parse_args()
@@ -445,14 +487,14 @@ def _main() -> None:
     values = train_validation[args.column]
     study = search_classical_model(
         values, args.model, horizon=args.horizon, folds=args.folds,
-        trials=args.trials, seasonal_period=args.seasonal_period,
+        trials=args.trials, seasonal_periods=args.seasonal_period,
         storage=args.storage, study_name=args.study_name, origins=origins,
     )
     test_data = symbol_data[
         (timestamps >= test_start) & (timestamps <= test_end)
     ]
     model = build_model(args.model, study.best_params).fit(values)
-    forecast = model.forecast(len(test_data)).mean.to_numpy(dtype="float64")
+    forecast = model.forecast(len(test_data)).mean().to_numpy(dtype="float64")
     actual = test_data[args.column].to_numpy(dtype="float64")
     test_mae = float(np.mean(np.abs(forecast - actual)))
     print(
